@@ -1,0 +1,239 @@
+# Running DRAKES on RunPod
+
+A setup kit for [DRAKES](https://github.com/ChenyuWang-Monica/DRAKES) (ICLR 2025),
+which fine-tunes discrete diffusion models with reward optimization — the same
+shape of problem as RLHF post-training, on DNA and protein sequences instead of
+text.
+
+| File | What it does |
+| --- | --- |
+| `setup_dna.sh` | Full pod bootstrap for the regulatory-DNA experiment |
+| `setup_protein.sh` | Full pod bootstrap for the protein-stability experiment |
+| `set_base_path.py` | Rewrites the author's hardcoded cluster path to yours |
+| `smoke_test.py` | Verifies GPU, dependencies, and downloaded weights before you burn GPU hours |
+
+**Start with the DNA experiment.** It is a small model, the environment installs
+cleanly, and a fine-tuning run finishes in hours rather than days. The protein
+experiment needs MultiFlow, PyRosetta, and an older CUDA build; save it for
+after the first one works.
+
+---
+
+## What you are actually going to run
+
+The thing worth understanding before you spend money on a GPU is that the
+DRAKES training objective is the RLHF objective, almost line for line. From
+`drakes_dna/finetune_reward_bp.py`:
+
+```python
+kl_loss    = torch.stack(total_kl, 1).sum(1).mean()
+reward_loss = -torch.mean(reward)
+loss        = reward_loss + kl_loss * current_alpha
+```
+
+Maximize a reward, minus `alpha` times the KL divergence from the frozen
+pretrained model. That is the same trade-off that PPO-based RLHF makes: chase
+the reward, but do not drift so far from the reference policy that you break
+the fluency it learned during pretraining. The failure mode is the same too —
+turn `alpha` down far enough and you get reward hacking, where the model finds
+sequences the reward oracle loves and biology does not.
+
+The interesting difference is *how* the gradient gets computed. RLHF on a
+language model normally uses a policy-gradient estimator, because you cannot
+backpropagate through a sampled token. DRAKES backpropagates through the entire
+sampling chain directly, using the Gumbel-softmax trick to make each discrete
+denoising step differentiable. That is the paper's contribution, and it is why
+the run unrolls ~50 diffusion steps and holds them all in memory.
+
+The pieces in the DNA experiment:
+
+- **The policy**: a masked discrete diffusion model (MDLM) over 200-base-pair
+  DNA sequences. Small — a 128-dim CNN, four stacks.
+- **The reward model**: a [gReLU](https://genentech.github.io/gReLU/) oracle that
+  predicts enhancer activity in a cell line. Two separate copies ship with the
+  data: `reward_oracle_ft.ckpt` to train against, `reward_oracle_eval.ckpt` to
+  score with. Using a *held-out* oracle for evaluation is how you catch reward
+  hacking, and the split is worth copying into your own projects.
+- **The reference model**: a frozen copy of the pretrained diffusion model,
+  used only for the KL term.
+
+---
+
+## Step 1 — Connect the RunPod MCP server (on your own machine)
+
+The command you found:
+
+```bash
+npx @runpod/mcp-server@latest add
+```
+
+That is an interactive installer. It detects your MCP clients, asks which to
+configure, and offers hosted mode (OAuth, no key on disk — recommended) or
+local mode (stores a `RUNPOD_API_KEY`). It needs a terminal and a browser, so
+run it on your laptop, not inside a cloud session. Restart Claude Code
+afterwards; MCP servers are loaded at startup.
+
+The equivalent one-liner, skipping the wizard:
+
+```bash
+claude mcp add --transport http runpod -s user https://mcp.getrunpod.io/
+```
+
+Verify with `claude mcp list`, or `/mcp` inside a session.
+
+Once connected, you can create pods, list GPU types, check what is running, and
+stop pods by asking in plain language. That is genuinely useful for the "did I
+leave a pod running overnight" problem, which is the main way people lose money
+on RunPod.
+
+You do not strictly need the MCP server — the web console does the same things.
+It is a convenience, not a dependency.
+
+## Step 2 — Create the pod
+
+Settings that matter, in order of how much they will cost you if you get them
+wrong:
+
+**Attach a network volume**, 100 GB or more, mounted at `/workspace`. This is
+the single most important choice. Container disk is wiped when a pod stops; the
+network volume is not. The scripts default to `/workspace` for exactly this
+reason. Without a volume you re-download tens of gigabytes of weights every
+session.
+
+**GPU.** For the DNA experiment an RTX A5000 or A4000 (24 GB) is plenty — the
+model is small, and the memory pressure comes from unrolling diffusion steps,
+not from parameters. An A100 40 GB is comfortable if you want to raise
+`--batch_size`. For the *protein* experiment you must pick an Ampere card
+(A100, A6000, A5000, 3090): it pins torch 2.0.1+cu117, which has no kernels for
+H100 or 40-series and newer.
+
+**Template.** Any RunPod PyTorch image. The scripts install their own conda
+environment on top, so the image's torch version does not matter.
+
+**Stop the pod when you are not using it.** You are billed per second while it
+runs. A stopped pod keeps its volume; you pay only the volume's storage rate.
+
+## Step 3 — Bootstrap
+
+Get this repo onto the pod, then run the script. From a pod terminal (web
+console or SSH):
+
+```bash
+cd /workspace
+git clone https://github.com/luckynbucky/drakes-runpod.git
+bash drakes-runpod/setup_dna.sh
+```
+
+The repo is public, so this needs no credentials. If you would rather not clone
+it, the kit is only four files — `scp` them over, use `runpodctl send`, or paste
+them into the pod's editor. `setup_dna.sh` locates its siblings relative to
+itself, so any directory works.
+
+The script installs Miniconda, creates the `sedd` environment on python 3.9.18,
+installs torch 2.3.1+cu121 and the DRAKES dependencies, clones DRAKES, installs
+gReLU pinned to v1.0.2, downloads the data bundle, and rewrites the hardcoded
+paths. Budget 30–60 minutes, most of it the download.
+
+Two things it handles that the upstream README does not:
+
+- **gReLU must be v1.0.2.** The provided oracle checkpoints were saved with it.
+  Later versions changed `LightningModel`, and loading fails with an unpickling
+  error that looks like a corrupt download.
+- **`causal-conv1d` is optional.** Upstream's `env.sh` installs it, but that is
+  inherited from MDLM's Mamba backbone. The DNA config uses `backbone: cnn`, so
+  the script tries it and moves on if the CUDA build fails.
+
+Then verify before spending GPU time:
+
+```bash
+conda activate sedd
+python /workspace/drakes-runpod/smoke_test.py --base-path /workspace/drakes_data
+```
+
+You want zero failures. It checks that CUDA kernels actually run (not just that
+`torch.cuda.is_available()` returns True, which lies about driver mismatches),
+that gReLU is the right version, that every checkpoint the training scripts
+read is present, and that no file still points at the author's cluster.
+
+## Step 4 — Fine-tune
+
+```bash
+cd /workspace/DRAKES/drakes_dna
+python finetune_reward_bp.py --name run1 --base_path /workspace/drakes_data
+```
+
+Run it under `tmux` or `nohup` — an SSH drop otherwise kills the job.
+
+Checkpoints land in `/workspace/drakes_data/mdlm/reward_bp_results_final/`,
+every 50 epochs by default. A reference fine-tuned checkpoint ships with the
+data bundle, so you can compare your run against the authors'.
+
+`wandb` is imported unconditionally. Either `wandb login` first or set
+`WANDB_MODE=offline`.
+
+### The knobs worth experimenting with
+
+| Flag | Default | Why you would change it |
+| --- | --- | --- |
+| `--alpha` | `0.001` | The KL penalty weight. **Start here.** Raise it and the model stays close to the pretrained distribution but gains less reward; lower it and watch reward hacking appear — the training oracle's score climbs while the held-out eval oracle's does not. That gap is the whole lesson. |
+| `--batch_size` | `32` | Lower it first if you hit OOM. |
+| `--num_accum_steps` | `4` | Gradient accumulation. Raising this while lowering batch size keeps the effective batch constant on a smaller GPU. |
+| `--truncate_steps` | `50` | How many of the 128 diffusion steps get backpropagated through. This is the memory/fidelity dial. |
+| `--truncate_kl` | `False` | Whether the KL term is computed on the truncated window only. |
+| `--alpha_schedule_warmup` | `0` | Linearly ramps `alpha` over the first N epochs. |
+
+The single most instructive experiment: run `--alpha 0.001` and `--alpha 0` with
+everything else fixed, and plot the training-oracle reward against the
+eval-oracle reward for both. You will see reward hacking happen, measured, in a
+setting small enough to iterate on.
+
+## Step 5 — Evaluate
+
+`drakes_dna/eval.ipynb` scores generated sequences with the held-out oracle and
+the ATAC chromatin-accessibility classifier. To reach it from your laptop, start
+Jupyter on the pod and use the port RunPod exposes:
+
+```bash
+jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root
+```
+
+The `setup_dna.sh` script registers the conda env as a Jupyter kernel named
+`Python (sedd)` — select it, or the imports will fail.
+
+---
+
+## Cost, roughly
+
+A 24 GB card runs about $0.20–0.45/hour on RunPod's community cloud, and an
+A100 40 GB about $1.10–1.90, though pricing moves. Setup is an hour, mostly
+downloading. Fine-tuning is the real spend, so treat the first run as a short
+smoke run — a handful of epochs, confirm reward moves in the right direction,
+kill it — before committing to a long one.
+
+Storage on a stopped pod's volume bills at roughly $0.05–0.10/GB/month, so a
+100 GB volume is a couple of dollars a month to keep your environment alive
+between sessions. That is almost always worth it versus re-running setup.
+
+## Troubleshooting
+
+**`ModuleNotFoundError` for `grelu`, `hydra`, anything** — the conda env is not
+active. `conda activate sedd`. New shells on the pod do not inherit it.
+
+**Unpickling error loading an oracle checkpoint** — wrong gReLU version.
+`pip install git+https://github.com/Genentech/gReLU.git@v1.0.2`.
+
+**`FileNotFoundError` under `/data/scratch/wangchy/`** — the path rewrite did
+not cover something. Re-run `set_base_path.py --dry-run` to see what is left.
+
+**CUDA OOM** — lower `--batch_size` to 16 or 8 and raise `--num_accum_steps` to
+keep the effective batch size the same.
+
+**Everything vanished after a restart** — it was on container disk, not
+`/workspace`. Recreate the pod with a network volume attached.
+
+## References
+
+- Paper: [Fine-Tuning Discrete Diffusion Models via Reward Optimization](https://arxiv.org/abs/2410.13643)
+- Code: [ChenyuWang-Monica/DRAKES](https://github.com/ChenyuWang-Monica/DRAKES)
+- Built on [MDLM](https://github.com/kuleshov-group/mdlm) (DNA) and [MultiFlow](https://github.com/jasonkyuyim/multiflow) (protein)
+- Reward oracles: [gReLU](https://genentech.github.io/gReLU/)
