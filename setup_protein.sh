@@ -24,7 +24,9 @@ mkdir -p "$BASE_PATH"
 
 if command -v apt-get >/dev/null 2>&1; then
   apt-get update -qq
-  apt-get install -y -qq git wget unzip build-essential
+  # tmux matters here: this script runs long enough that a dropped SSH or
+  # browser session would otherwise SIGHUP it partway through.
+  apt-get install -y -qq git wget unzip build-essential tmux
 fi
 
 # --- Conda ---------------------------------------------------------------

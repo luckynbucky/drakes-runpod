@@ -152,10 +152,22 @@ Get this repo onto the pod, then run the script. From a pod terminal (web
 console or SSH):
 
 ```bash
+tmux new -s setup
 cd /workspace
 git clone https://github.com/luckynbucky/drakes-runpod.git
 bash drakes-runpod/setup_dna.sh
 ```
+
+**Run it inside `tmux`.** Setup takes 30-60 minutes, and without tmux the whole
+thing dies the moment your laptop sleeps or the browser tab drops: the terminal
+session ends, the shell sends SIGHUP, and the script goes down mid-install. The
+pod keeps running regardless -- it is your *connection* that is fragile, not the
+machine. Inside tmux the process is owned by the pod, so disconnecting is
+harmless.
+
+Detach with ctrl-b then d. Reattach later, from any machine, with
+`tmux attach -t setup`, or `tmux ls` to see what is running. If tmux is missing
+on a bare image, `apt-get install -y tmux`.
 
 The repo is public, so this needs no credentials. If you would rather not clone
 it, the kit is only four files — `scp` them over, use `runpodctl send`, or paste
