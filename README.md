@@ -374,6 +374,26 @@ this repo and re-run. Re-running is safe: it reuses the existing Miniconda and
 skips anything already done. If you would rather accept the Anaconda terms
 instead, run the two `conda tos accept` commands the error prints.
 
+**Out of disk space** — check what is actually consuming it:
+
+```bash
+df -h /workspace
+du -sh /workspace/* | sort -h
+```
+
+The fixed costs are the conda environment, which is roughly 8-10 GB once
+PyTorch and its CUDA libraries are in, plus whatever the data bundle extracts
+to. The bundle carries data for BOTH the DNA and protein experiments, so if you
+are only doing DNA you can extract just the part you need:
+
+```bash
+unzip /workspace/drakes_data/DRAKES_data.zip 'mdlm/*' -d /workspace/drakes_data
+```
+
+`setup_dna.sh` measures the archive before extracting and stops with these
+instructions if the space is not there, rather than filling the volume and
+failing partway. RunPod volumes can be resized upward in the console.
+
 **Setup sits on "Installing DRAKES dependencies" for a very long time** — pip
 resolver backtracking. Python 3.9 is end-of-life, and nine of the packages here
 have dropped support for it, so an unpinned install searches release history for

@@ -144,18 +144,72 @@ python -m ipykernel install --user --name "$ENV_NAME" \
 # --- 6. Data and pretrained weights --------------------------------------
 # ~ tens of GB; the pod's network is fast, your laptop's is not, which is why
 # this downloads on the pod rather than being uploaded.
+# Free space in whole GB at a given path.
+free_gb() {
+  df -BG --output=avail "$1" 2>/dev/null | tail -1 | tr -dc '0-9'
+}
+
+ZIP_PATH="$BASE_PATH/DRAKES_data.zip"
+
 if [ ! -d "$BASE_PATH/mdlm" ]; then
-  echo "==> Downloading DRAKES_data.zip (this takes a while)"
-  DATA_URL="https://www.dropbox.com/scl/fi/zi6egfppp0o78gr0tmbb1/DRAKES_data.zip?rlkey=yf7w0pm64tlypwsewqc01wmfq&dl=1"
-  wget --show-progress -O "$BASE_PATH/DRAKES_data.zip" "$DATA_URL"
-  echo "==> Unzipping"
-  unzip -q "$BASE_PATH/DRAKES_data.zip" -d "$BASE_PATH"
+  AVAIL=$(free_gb "$BASE_PATH")
+  echo "==> Free space at $BASE_PATH: ${AVAIL:-unknown} GB"
+  if [ -n "${AVAIL:-}" ] && [ "$AVAIL" -lt 25 ]; then
+    echo "    WARNING: under 25 GB free. The archive has to be downloaded and"
+    echo "    then extracted alongside itself, so the peak requirement is the"
+    echo "    compressed size plus the extracted size. This may not fit."
+  fi
+
+  if [ ! -f "$ZIP_PATH" ]; then
+    echo "==> Downloading DRAKES_data.zip (this takes a while)"
+    DATA_URL="https://www.dropbox.com/scl/fi/zi6egfppp0o78gr0tmbb1/DRAKES_data.zip?rlkey=yf7w0pm64tlypwsewqc01wmfq&dl=1"
+    # Resume a partial download rather than starting over.
+    wget --continue --show-progress -O "$ZIP_PATH" "$DATA_URL"
+  else
+    echo "==> Archive already downloaded, skipping"
+  fi
+
+  # Measure before committing to the extract, so running out of room produces
+  # a useful message rather than a half-written tree.
+  UNCOMPRESSED_BYTES=$(unzip -l "$ZIP_PATH" | tail -1 | awk '{print $1}')
+  UNCOMPRESSED_GB=$(( (UNCOMPRESSED_BYTES + 1073741823) / 1073741824 ))
+  ZIP_GB=$(du -BG "$ZIP_PATH" | cut -f1 | tr -dc '0-9')
+  AVAIL=$(free_gb "$BASE_PATH")
+  echo "==> Archive is ${ZIP_GB} GB compressed, ~${UNCOMPRESSED_GB} GB extracted."
+  echo "    Free space: ${AVAIL:-unknown} GB"
+
+  if [ -n "${AVAIL:-}" ] && [ "$AVAIL" -lt "$UNCOMPRESSED_GB" ]; then
+    cat <<MSG
+
+ERROR: not enough free space to extract the archive.
+  needed:    ~${UNCOMPRESSED_GB} GB
+  available: ${AVAIL} GB
+
+The bundle carries data for BOTH experiments, but the DNA experiment only
+needs the mdlm/ tree. Extract just that, which is much smaller:
+
+  unzip '$ZIP_PATH' 'mdlm/*' -d '$BASE_PATH'
+  rm '$ZIP_PATH'
+  bash $0
+
+Or list what is in the archive first, to see where the space is going:
+
+  unzip -l '$ZIP_PATH' | sort -k1 -n -r | head -30
+
+Otherwise, resize the network volume in the RunPod console and re-run.
+MSG
+    exit 1
+  fi
+
+  echo "==> Unzipping (quiet; a large archive can sit here several minutes)"
+  unzip -q "$ZIP_PATH" -d "$BASE_PATH"
   # The zip may contain a single top-level folder; flatten it if so.
   if [ -d "$BASE_PATH/DRAKES_data" ] && [ ! -d "$BASE_PATH/mdlm" ]; then
     mv "$BASE_PATH/DRAKES_data"/* "$BASE_PATH/"
     rmdir "$BASE_PATH/DRAKES_data"
   fi
-  rm -f "$BASE_PATH/DRAKES_data.zip"
+  rm -f "$ZIP_PATH"
+  echo "==> Free space after extract: $(free_gb "$BASE_PATH") GB"
 else
   echo "==> Data already present at $BASE_PATH/mdlm, skipping download"
 fi
