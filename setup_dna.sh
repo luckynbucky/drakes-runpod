@@ -83,17 +83,39 @@ fi
 # This mirrors drakes_dna/env.sh. We use the pip wheels for torch rather than
 # the conda channel: same version, much faster to resolve.
 echo "==> Installing PyTorch 2.3.1 + cu121"
-pip install --quiet torch==2.3.1 torchvision==0.18.1 torchaudio==2.3.1 \
+pip install torch==2.3.1 torchvision==0.18.1 torchaudio==2.3.1 \
   --index-url https://download.pytorch.org/whl/cu121
 
 echo "==> Installing DRAKES dependencies"
-pip install --quiet packaging ninja
-pip install --quiet transformers datasets omegaconf rich timm scipy wandb \
-  lightning ipykernel notebook
+# These versions are pinned deliberately. Python 3.9 reached end of life in
+# October 2025 and most of these projects have dropped support for it since,
+# so an unpinned install sends pip walking backwards through release history
+# hunting for a 3.9-compatible combination -- on nine of these packages at
+# once. That is a combinatorial search which can run for hours and prints
+# nothing while it does it. Each pin below is the newest release that still
+# supports 3.9, which turns the search into a direct install.
+#
+# The pins help correctness too, not just speed: they land near the versions
+# DRAKES was developed against, and gReLU 1.0.2 is a 2024 release whose
+# checkpoints expect that era's ecosystem.
+#
+# If you move this off Python 3.9, drop the pins rather than bumping them.
+pip install --prefer-binary packaging ninja
+pip install --prefer-binary \
+  "transformers==4.57.6" \
+  "datasets==4.5.0" \
+  "lightning==2.6.0" \
+  "scipy==1.13.1" \
+  "pandas==2.3.3" \
+  "matplotlib==3.9.4" \
+  "notebook==7.5.7" \
+  "wandb==0.26.1" \
+  "ipykernel==6.31.0" \
+  timm rich omegaconf
 # biopython is not a DRAKES dependency; the physics reward test suite validates
 # against its independent implementation of the same thermodynamic model.
-pip install --quiet biopython matplotlib pandas
-pip install --quiet --upgrade hydra-core hydra-submitit-launcher
+pip install --prefer-binary "biopython==1.85"
+pip install --prefer-binary --upgrade hydra-core hydra-submitit-launcher
 
 # causal-conv1d is listed in env.sh because upstream MDLM can use a Mamba
 # backbone. DRAKES's DNA config uses `backbone: cnn`, so this is not needed and
@@ -110,7 +132,7 @@ if ! python -c "import grelu" 2>/dev/null; then
   echo "==> Installing gReLU v1.0.2"
   git clone https://github.com/Genentech/gReLU.git /tmp/gReLU
   git -C /tmp/gReLU checkout -q v1.0.2
-  pip install --quiet /tmp/gReLU
+  pip install --prefer-binary /tmp/gReLU
   rm -rf /tmp/gReLU
 fi
 

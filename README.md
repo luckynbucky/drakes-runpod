@@ -362,6 +362,14 @@ this repo and re-run. Re-running is safe: it reuses the existing Miniconda and
 skips anything already done. If you would rather accept the Anaconda terms
 instead, run the two `conda tos accept` commands the error prints.
 
+**Setup sits on "Installing DRAKES dependencies" for a very long time** — pip
+resolver backtracking. Python 3.9 is end-of-life, and nine of the packages here
+have dropped support for it, so an unpinned install searches release history for
+a compatible combination and prints nothing meanwhile. The script pins the
+newest 3.9-compatible release of each, which avoids the search. Pull the latest
+version of this repo and re-run; the re-run skips the conda environment, the
+clone and PyTorch, so it restarts at the dependency step.
+
 **`ModuleNotFoundError` for `grelu`, `hydra`, anything** — the conda env is not
 active. `conda activate sedd`. New shells on the pod do not inherit it.
 
