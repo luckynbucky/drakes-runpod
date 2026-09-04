@@ -11,6 +11,26 @@ text.
 | `setup_protein.sh` | Full pod bootstrap for the protein-stability experiment |
 | `set_base_path.py` | Rewrites the author's hardcoded cluster path to yours |
 | `smoke_test.py` | Verifies GPU, dependencies, and downloaded weights before you burn GPU hours |
+| `physics_reward.py` | Differentiable nearest-neighbor duplex thermodynamics (dG, Tm, GC) |
+| `hairpin_reward.py` | Differentiable hairpin propensity, the synthesizability constraint |
+| `analyze_gc_confound.py` | Checks whether a physics reward is secretly just GC content |
+| `test_*.py` | Validation suites; run them before spending GPU time |
+
+## The physics rewards
+
+`physics_reward.py` and `hairpin_reward.py` supply exact, differentiable
+rewards that can be optimized alongside DRAKES's learned gReLU oracle. Both
+consume the relaxed one-hot tensors the Gumbel-softmax sampler emits, so they
+plug into the paper's direct-backpropagation objective without a
+policy-gradient estimator.
+
+Use the hairpin term as the design constraint and duplex dG as a diagnostic.
+`analyze_gc_confound.py` explains why: duplex free energy is 99.6% explained by
+base composition, so a model hits a dG target by shifting GC content rather than
+by learning anything about sequence arrangement. Hairpin propensity responds to
+arrangement roughly 94x more strongly, and it is the property that actually
+governs whether a construct can be synthesized.
+
 
 **Start with the DNA experiment.** It is a small model, the environment installs
 cleanly, and a fine-tuning run finishes in hours rather than days. The protein
