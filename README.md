@@ -25,11 +25,24 @@ plug into the paper's direct-backpropagation objective without a
 policy-gradient estimator.
 
 Use the hairpin term as the design constraint and duplex dG as a diagnostic.
-`analyze_gc_confound.py` explains why: duplex free energy is 99.6% explained by
-base composition, so a model hits a dG target by shifting GC content rather than
-by learning anything about sequence arrangement. Hairpin propensity responds to
-arrangement roughly 94x more strongly, and it is the property that actually
-governs whether a construct can be synthesized.
+`analyze_gc_confound.py` explains why. Duplex free energy is 99.6% explained by
+base composition (R^2 = 0.996), so a model hits a dG target by shifting GC
+content rather than by learning anything about arrangement. Hairpin propensity
+drops that to R^2 = 0.69, and measured against each metric's own
+composition-driven range, its response to arrangement is 11.3% versus 1.5% --
+about 7.5x more order-sensitive.
+
+The operational difference matters more than either ratio: at fixed 50% GC,
+shuffling alone moves hairpin dG by up to 4.3 kcal/mol against a tolerance of
+-3.0, so arrangement by itself routinely decides whether the constraint is met.
+Shuffling moves duplex dG by 0.010 kcal/mol/bp, which cannot reach any target
+worth setting. Hairpin propensity is also the property that actually governs
+whether a construct can be synthesized.
+
+Its residual GC correlation is real physics, not an artifact -- GC pairs stack
+more strongly, so GC-rich sequences genuinely do form more stable hairpins.
+Report composition alongside the constraint rather than treating the term as
+purely structural.
 
 
 **Start with the DNA experiment.** It is a small model, the environment installs
