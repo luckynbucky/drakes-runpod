@@ -29,13 +29,21 @@ fi
 
 # --- Conda ---------------------------------------------------------------
 if ! command -v conda >/dev/null 2>&1; then
-  echo "==> Installing Miniconda"
-  wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh \
-    -O /tmp/miniconda.sh
-  bash /tmp/miniconda.sh -b -p /workspace/miniconda3
-  rm /tmp/miniconda.sh
-  export PATH="/workspace/miniconda3/bin:$PATH"
-  conda init bash
+  if [ -d /workspace/miniconda3 ]; then
+    # An earlier run installed it, but this shell has not picked up the
+    # conda init written into ~/.bashrc. Reuse it rather than reinstalling,
+    # which would fail on the existing directory.
+    echo "==> Reusing Miniconda already at /workspace/miniconda3"
+    export PATH="/workspace/miniconda3/bin:$PATH"
+  else
+    echo "==> Installing Miniconda"
+    wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh \
+      -O /tmp/miniconda.sh
+    bash /tmp/miniconda.sh -b -p /workspace/miniconda3
+    rm /tmp/miniconda.sh
+    export PATH="/workspace/miniconda3/bin:$PATH"
+    conda init bash
+  fi
 fi
 
 # shellcheck disable=SC1091
@@ -54,7 +62,8 @@ if ! conda env list | grep -q "^${ENV_NAME} "; then
   if command -v mamba >/dev/null 2>&1; then
     SOLVER=mamba
   else
-    conda install -y -n base -c conda-forge mamba >/dev/null 2>&1 && SOLVER=mamba || true
+    conda install -y -n base -c conda-forge --override-channels mamba \
+      >/dev/null 2>&1 && SOLVER=mamba || true
   fi
   "$SOLVER" env create -f "$REPO_DIR/drakes_protein/multiflow.yml"
 fi

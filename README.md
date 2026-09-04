@@ -354,6 +354,14 @@ between sessions. That is almost always worth it versus re-running setup.
 
 ## Troubleshooting
 
+**`CondaToSNonInteractiveError` during setup** — recent Miniconda will not use
+Anaconda's `defaults` channels until their Terms of Service are accepted. The
+setup script creates its environment from conda-forge with
+`--override-channels` to avoid the gate entirely, so pull the latest version of
+this repo and re-run. Re-running is safe: it reuses the existing Miniconda and
+skips anything already done. If you would rather accept the Anaconda terms
+instead, run the two `conda tos accept` commands the error prints.
+
 **`ModuleNotFoundError` for `grelu`, `hydra`, anything** — the conda env is not
 active. `conda activate sedd`. New shells on the pod do not inherit it.
 

@@ -37,13 +37,21 @@ fi
 # The DRAKES DNA env pins python 3.9.18, which is older than most RunPod
 # images ship, so we use conda rather than the image's system python.
 if ! command -v conda >/dev/null 2>&1; then
-  echo "==> Installing Miniconda"
-  wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh \
-    -O /tmp/miniconda.sh
-  bash /tmp/miniconda.sh -b -p /workspace/miniconda3
-  rm /tmp/miniconda.sh
-  export PATH="/workspace/miniconda3/bin:$PATH"
-  conda init bash
+  if [ -d /workspace/miniconda3 ]; then
+    # An earlier run installed it, but this shell has not picked up the
+    # conda init written into ~/.bashrc. Reuse it rather than reinstalling,
+    # which would fail on the existing directory.
+    echo "==> Reusing Miniconda already at /workspace/miniconda3"
+    export PATH="/workspace/miniconda3/bin:$PATH"
+  else
+    echo "==> Installing Miniconda"
+    wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh \
+      -O /tmp/miniconda.sh
+    bash /tmp/miniconda.sh -b -p /workspace/miniconda3
+    rm /tmp/miniconda.sh
+    export PATH="/workspace/miniconda3/bin:$PATH"
+    conda init bash
+  fi
 fi
 
 # shellcheck disable=SC1091
@@ -51,7 +59,17 @@ source "$(conda info --base)/etc/profile.d/conda.sh"
 
 if ! conda env list | grep -q "^${ENV_NAME} "; then
   echo "==> Creating conda env '${ENV_NAME}' (python 3.9.18)"
-  conda create -y -n "$ENV_NAME" python=3.9.18
+  # conda-forge only, with --override-channels. Recent Miniconda refuses to use
+  # Anaconda's "defaults" channels (repo.anaconda.com/pkgs/*) until their Terms
+  # of Service are explicitly accepted, which otherwise stops this script dead
+  # with CondaToSNonInteractiveError. conda-forge carries the pinned python
+  # build and no such gate.
+  #
+  # If you would rather use the defaults channels, that is your call to make,
+  # not this script's -- accept their terms yourself first:
+  #   conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+  #   conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+  conda create -y -n "$ENV_NAME" python=3.9.18 -c conda-forge --override-channels
 fi
 conda activate "$ENV_NAME"
 
