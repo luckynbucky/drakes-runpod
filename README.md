@@ -235,6 +235,111 @@ The `setup_dna.sh` script registers the conda env as a Jupyter kernel named
 
 ---
 
+## Step 6 - The multi-objective experiment
+
+This is the part that is yours rather than the paper's. Everything above gets
+stock DRAKES running; this adds the physics constraint and produces the two
+plots worth presenting.
+
+### 6a. Put the physics modules where DRAKES can import them
+
+`finetune_multiobjective.py` imports DRAKES internals (`diffusion_gosai_update`,
+`oracle`, `utils`), so it has to live in `drakes_dna/` alongside them:
+
+```bash
+cd /workspace
+cp drakes-runpod/physics_reward.py \
+   drakes-runpod/hairpin_reward.py \
+   drakes-runpod/finetune_multiobjective.py \
+   DRAKES/drakes_dna/
+```
+
+### 6b. Validate before spending GPU time
+
+```bash
+conda activate sedd
+cd /workspace/drakes-runpod
+python test_physics_reward.py            # 13 checks, needs biopython
+python test_hairpin_reward.py            # 16 checks
+python test_multiobjective_integration.py  # 13 checks
+python analyze_gc_confound.py            # the confound numbers, ~1 min
+```
+
+All 42 should pass. They run on CPU in about a minute and will catch a broken
+environment before a training run does.
+
+### 6c. Smoke run
+
+Two epochs at a tiny batch, just to prove the wiring holds end to end. `--name
+debug` skips wandb.
+
+```bash
+cd /workspace/DRAKES/drakes_dna
+python finetune_multiobjective.py \
+  --name debug \
+  --base_path /workspace/drakes_data/ \
+  --num_epochs 2 --num_accum_steps 1 --batch_size 8 \
+  --w_phys 0.5
+```
+
+Read the first epoch line carefully before going further. It reports
+`bio(train)`, `bio(held-out)`, `hairpin dG`, `viol` (fraction of sequences
+violating the constraint) and `GC`. Two things to check:
+
+* **Do the reward scales match?** If the biological reward is around 5 and the
+  physics penalty around -40, then `--w_phys 1.0` means the physics term
+  dominates entirely. Pick `w_phys` so the weighted terms are comparable, or
+  set `--hairpin_scale` to divide the penalty down.
+* **Is `viol` non-zero?** The hairpin penalty is one-sided and exactly flat
+  where the constraint is already satisfied. If no sampled sequence violates
+  tolerance, the physics term contributes zero gradient and the run will look
+  like the physics is doing nothing. Tighten `--hairpin_tolerance` (less
+  negative is stricter) until some sequences violate it.
+
+Time this run and extrapolate before committing to a long one.
+
+### 6d. The baseline
+
+`--w_phys 0` reproduces stock DRAKES through this identical code path. The
+gradients are bitwise identical to biology-only, so this is a genuine control
+rather than an approximation of one.
+
+```bash
+tmux new -s baseline
+python finetune_multiobjective.py \
+  --name baseline --w_phys 0 \
+  --base_path /workspace/drakes_data/ \
+  --num_epochs 200
+```
+
+Use `tmux` (detach with ctrl-b d) or `nohup`. An SSH drop otherwise kills the
+job. Either `wandb login` first or export `WANDB_MODE=offline`.
+
+### 6e. The sweep
+
+```bash
+for w in 0 0.1 0.3 1.0 3.0; do
+  python finetune_multiobjective.py \
+    --name sweep --w_phys $w \
+    --base_path /workspace/drakes_data/ \
+    --num_epochs 200
+done
+```
+
+Each run writes `metrics.jsonl` under
+`/workspace/drakes_data/mdlm/reward_bp_results_final/<run_name>/`, one JSON
+object per epoch, so both plots are a short pandas read:
+
+* **Pareto frontier** - final `bio_reward_heldout_oracle` against final
+  `hairpin_dg_ensemble`, one point per `w_phys`.
+* **Reward hacking** - `bio_reward_train_oracle` and
+  `bio_reward_heldout_oracle` against epoch, on one axis. The curves separating
+  is reward hacking, and `reward_hacking_gap` is logged directly.
+
+Plot `gc_content` alongside. Hairpin propensity keeps a real correlation with
+base composition, so showing the constraint was met without a large GC shift is
+what demonstrates the model learned arrangement rather than composition.
+
 ## Cost, roughly
 
 A 24 GB card runs about $0.20–0.45/hour on RunPod's community cloud, and an

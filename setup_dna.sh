@@ -72,6 +72,9 @@ echo "==> Installing DRAKES dependencies"
 pip install --quiet packaging ninja
 pip install --quiet transformers datasets omegaconf rich timm scipy wandb \
   lightning ipykernel notebook
+# biopython is not a DRAKES dependency; the physics reward test suite validates
+# against its independent implementation of the same thermodynamic model.
+pip install --quiet biopython matplotlib pandas
 pip install --quiet --upgrade hydra-core hydra-submitit-launcher
 
 # causal-conv1d is listed in env.sh because upstream MDLM can use a Mamba
