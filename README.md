@@ -449,6 +449,16 @@ this repo and re-run. Re-running is safe: it reuses the existing Miniconda and
 skips anything already done. If you would rather accept the Anaconda terms
 instead, run the two `conda tos accept` commands the error prints.
 
+**`AttributeError: module 'numpy' has no attribute 'product'`** — NumPy 2.0
+removed aliases that gReLU 1.0.2 still uses. Fix with `pip install 'numpy<2'`.
+
+This is worth generalising. Pinning each dependency to the newest release that
+still supports Python 3.9 sounds right and is wrong: the stack is anchored to
+2024 by gReLU 1.0.2 and torch 2.3.1, so "newest that imports" repeatedly
+collides with libraries that moved on. The better rule is to pin to the era of
+the oldest hard dependency. The same mistake produced a wandb client whose
+artifact API had changed underneath gReLU.
+
 **Out of disk space** — check what is actually consuming it:
 
 ```bash

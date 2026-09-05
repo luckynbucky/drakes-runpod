@@ -103,6 +103,12 @@ echo "==> Installing DRAKES dependencies"
 #
 # If you move this off Python 3.9, drop the pins rather than bumping them.
 pip install --prefer-binary packaging ninja
+# numpy<2 is not incidental. NumPy 2.0 removed long-deprecated aliases, and
+# gReLU 1.0.2 still calls np.product, which raises AttributeError at predict
+# time -- after the oracle has loaded, so it looks like a model problem rather
+# than a dependency one. torch 2.3.1 also predates NumPy 2, so holding the
+# whole stack on 1.x is the consistent choice, not just a workaround.
+pip install --prefer-binary "numpy<2"
 pip install --prefer-binary \
   "transformers==4.57.6" \
   "datasets==4.5.0" \
