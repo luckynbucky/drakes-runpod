@@ -381,13 +381,26 @@ python finetune_multiobjective.py \
 Use `tmux` (detach with ctrl-b d) or `nohup`. An SSH drop otherwise kills the
 job.
 
-On wandb: gReLU's LightningModel carries a wandb logger, so loading an oracle
-triggers wandb even when this script never calls it, and with no credentials
-on disk wandb opens an interactive account prompt -- a silent hang in an
-unattended run. The script now disables wandb for `--name debug` and falls
-back to offline logging otherwise. To choose deliberately, either run
-`wandb login` (worth it for comparing five sweep runs) or export
-`WANDB_MODE=disabled`.
+**wandb is a hard dependency here, not optional telemetry.** The reward
+oracles are Enformer-based, and gReLU downloads Enformer's pretrained weights
+from a wandb *artifact* while building the model:
+
+```
+get_artifact("human_state_dict", project="enformer")  ->  asserts on wandb.login()
+```
+
+So the oracle cannot be constructed without credentials, and setting
+`WANDB_MODE=disabled` or `offline` actively breaks it -- those modes make
+`wandb.login()` return false and the assert fires. Run this once on the pod,
+before anything else:
+
+```bash
+wandb login
+```
+
+A free account is enough; the key lands in `~/.netrc`. `smoke_test.py` checks
+for it, and the training script refuses to start without it rather than failing
+inside Lightning's checkpoint loader.
 
 ### 6e. The sweep
 

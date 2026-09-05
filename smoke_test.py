@@ -83,6 +83,32 @@ def check_imports():
         except ImportError as exc:
             record(FAIL, f"import {mod}", str(exc)[:80])
 
+    # gReLU's Enformer-based oracles download their pretrained weights from a
+    # wandb artifact at construction time, so wandb credentials are a hard
+    # prerequisite for the reward model, not an optional logging nicety.
+    try:
+        import wandb
+
+        mode = os.environ.get("WANDB_MODE", "")
+        if mode in ("disabled", "offline"):
+            record(
+                FAIL,
+                "wandb mode",
+                f"WANDB_MODE={mode} makes wandb.login() fail, and gReLU asserts "
+                "on it while building the oracle. Unset it.",
+            )
+        elif wandb.api.api_key:
+            record(PASS, "wandb credentials", "API key present")
+        else:
+            record(
+                FAIL,
+                "wandb credentials",
+                "no API key; run `wandb login` (free account). gReLU fetches "
+                "the Enformer weights from a wandb artifact.",
+            )
+    except ImportError:
+        record(FAIL, "import wandb", "not installed")
+
     try:
         import grelu
 

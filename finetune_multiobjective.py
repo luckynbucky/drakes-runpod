@@ -401,26 +401,33 @@ def main() -> None:
     args = build_argparser().parse_args()
     print(args)
 
-    # gReLU builds its LightningModel with a wandb logger, so loading an oracle
-    # triggers wandb on a machine that has never logged in -- and wandb answers
-    # by opening an interactive account prompt. In a debug run that is merely
-    # annoying; in an unattended sweep under tmux it is a silent hang waiting
-    # for a keypress. Debug runs report nowhere, so disable it outright.
-    # setdefault, so an explicit WANDB_MODE in the environment still wins.
-    if args.name == "debug":
-        os.environ.setdefault("WANDB_MODE", "disabled")
-    elif not os.environ.get("WANDB_MODE") and not os.path.exists(
-        os.path.expanduser("~/.netrc")
-    ):
-        # A real run with no credentials on disk would hit the same prompt.
-        # Fall back to offline logging, which writes locally and can be synced
-        # later with `wandb sync`, rather than blocking.
-        print(
-            "No wandb credentials found; setting WANDB_MODE=offline. "
-            "Run `wandb login` first, or export WANDB_MODE=disabled, to choose "
-            "explicitly."
-        )
-        os.environ["WANDB_MODE"] = "offline"
+    # Do NOT disable wandb here, however tempting it looks. gReLU does not
+    # merely log to wandb -- it FETCHES MODEL WEIGHTS from it. Constructing the
+    # Enformer-based oracle calls
+    #     get_artifact("human_state_dict", project="enformer")
+    # which asserts on wandb.login(). WANDB_MODE=disabled or offline makes that
+    # login return false and the oracle fails to build. An earlier version of
+    # this file set WANDB_MODE=disabled for debug runs and broke exactly this.
+    #
+    # So: a wandb account is a real dependency of the reward oracle. Check for
+    # credentials up front rather than failing several hundred lines into
+    # Lightning's checkpoint loader.
+    try:
+        import wandb as _wandb
+
+        if not _wandb.api.api_key:
+            raise SystemExit(
+                "No wandb API key found, and gReLU needs one: building the\n"
+                "Enformer-based reward oracle downloads its pretrained weights\n"
+                "from a wandb artifact, not just from the local checkpoint.\n\n"
+                "Fix with:  wandb login\n"
+                "(a free account is enough; the key goes in ~/.netrc)\n\n"
+                "Do not set WANDB_MODE=disabled or offline to get around this --\n"
+                "that makes wandb.login() return false and the oracle fails to\n"
+                "build at all."
+            )
+    except ImportError:
+        pass
 
     ckpt_path = os.path.join(args.base_path, "mdlm/outputs_gosai/pretrained.ckpt")
     log_base_dir = os.path.join(args.base_path, "mdlm/reward_bp_results_final")
