@@ -85,6 +85,13 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--alpha_schedule_warmup", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
+        "--skip_grelu_artifact",
+        action="store_true",
+        help="build the gReLU oracle without downloading Enformer's pretrained "
+        "weights from wandb. Safe when loading a complete checkpoint, because "
+        "those weights are overwritten with strict=True; see grelu_offline.py.",
+    )
+    parser.add_argument(
         "--eval_oracle_device",
         type=str,
         default=None,
@@ -412,10 +419,15 @@ def main() -> None:
     # So: a wandb account is a real dependency of the reward oracle. Check for
     # credentials up front rather than failing several hundred lines into
     # Lightning's checkpoint loader.
+    if args.skip_grelu_artifact:
+        import grelu_offline
+
+        grelu_offline.enable()
+
     try:
         import wandb as _wandb
 
-        if not _wandb.api.api_key:
+        if not args.skip_grelu_artifact and not _wandb.api.api_key:
             raise SystemExit(
                 "No wandb API key found, and gReLU needs one: building the\n"
                 "Enformer-based reward oracle downloads its pretrained weights\n"
