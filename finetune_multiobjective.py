@@ -53,7 +53,7 @@ from utils import set_seed, str2bool
 
 try:
     from hairpin_reward import HairpinPenaltyReward
-    from physics_reward import duplex_thermodynamics, gc_content
+    from physics_reward import GCWindowPenalty, duplex_thermodynamics, gc_content
 except ImportError as exc:  # pragma: no cover
     raise SystemExit(
         "Could not import the physics reward modules. Copy physics_reward.py "
@@ -142,6 +142,16 @@ def build_argparser() -> argparse.ArgumentParser:
         "penalty onto a scale comparable with the biological reward",
     )
     physics.add_argument(
+        "--w_gc",
+        type=float,
+        default=0.0,
+        help="weight on a GC-window penalty. Zero disables it. Non-zero stops "
+        "the model meeting the hairpin constraint by collapsing GC content, "
+        "which is what it does otherwise -- see GCWindowPenalty.",
+    )
+    physics.add_argument("--gc_low", type=float, default=0.35)
+    physics.add_argument("--gc_high", type=float, default=0.65)
+    physics.add_argument(
         "--seq_length", type=int, default=200, help="sequence length the model emits"
     )
     return parser
@@ -177,7 +187,8 @@ def save_checkpoint(path, new_model, optim, epoch, args, initial_gap) -> None:
 
 
 def fine_tune(new_model, reward_model, reward_model_eval, old_model, args,
-              physics_reward, log_path, metrics_path, save_path, eps=1e-5):
+              physics_reward, log_path, metrics_path, save_path, eps=1e-5,
+              gc_penalty=None):
     new_model.config.finetuning.truncate_steps = args.truncate_steps
     new_model.config.finetuning.gumbel_softmax_temp = args.gumbel_temp
     new_model.train()
@@ -237,6 +248,11 @@ def fine_tune(new_model, reward_model, reward_model_eval, old_model, args,
             # logsumexp over ~16k stems and is not worth doing in bf16.
             sample_f32 = sample.float()
             reward_phys = physics_reward(sample_f32)
+            reward_gc = (
+                gc_penalty(sample_f32)
+                if gc_penalty is not None
+                else torch.zeros_like(reward_phys)
+            )
 
             # The sampler returns a straight-through estimate,
             #     x_soft + (x_hard - x_soft).detach()
@@ -339,7 +355,11 @@ def fine_tune(new_model, reward_model, reward_model_eval, old_model, args,
             kl_loss = torch.stack(total_kl, 1).sum(1).mean()
 
             # --- the multi-objective loss ---
-            combined = args.w_bio * reward_bio + args.w_phys * reward_phys
+            combined = (
+                args.w_bio * reward_bio
+                + args.w_phys * reward_phys
+                + args.w_gc * reward_gc
+            )
             reward_loss = -torch.mean(combined)
             loss = (reward_loss + kl_loss * current_alpha) / args.num_accum_steps
             loss.backward()
@@ -579,6 +599,14 @@ def main() -> None:
             f"parameters, ~{total - params:.1f} GB left for activations"
         )
 
+    gc_penalty = None
+    if args.w_gc > 0:
+        gc_penalty = GCWindowPenalty(low=args.gc_low, high=args.gc_high)
+        print(
+            f"GC window penalty: [{args.gc_low}, {args.gc_high}], "
+            f"weight {args.w_gc}"
+        )
+
     baseline = physics_reward.scorer.unstructured_baseline()
     print(
         f"hairpin scorer: {physics_reward.scorer.n_stems} candidate stems, "
@@ -604,6 +632,7 @@ def main() -> None:
             log_path,
             metrics_path,
             save_path,
+            gc_penalty=gc_penalty,
         )
     except torch.cuda.OutOfMemoryError:
         peak = torch.cuda.max_memory_allocated() / 1024**3

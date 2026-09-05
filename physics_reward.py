@@ -264,3 +264,49 @@ def one_hot_from_strings(seqs: list[str], device=None, dtype=torch.float64):
         [[BASE_INDEX[c] for c in s] for s in seqs], device=device, dtype=torch.long
     )
     return torch.nn.functional.one_hot(indices, num_classes=4).to(dtype)
+
+
+class GCWindowPenalty:
+    """Keep base composition inside a synthesizable window.
+
+    Why this exists: a hairpin penalty on its own is gameable. GC pairs stack
+    more strongly than AT, so the cheapest way to reduce secondary structure is
+    to drop GC content, and a model given only a structural objective will find
+    that before it finds anything about arrangement. An observed run took GC
+    from 0.44 to 0.28 in ten epochs while the violation rate fell from 0.38 to
+    0.05 -- the constraint satisfied, and almost nothing learned about sequence
+    design.
+
+    The fix is not to remove the structural term but to add the constraint that
+    real synthesis also imposes. Vendors decline or surcharge sequences outside
+    roughly 25-65% GC, so a design that escapes a structural constraint by
+    leaving that window has not solved the problem, it has moved it. Pinning
+    composition forces the structural objective to be met by arrangement, which
+    is the only route left.
+
+    The penalty is one-sided and zero inside the window, so it does nothing
+    until composition drifts out of range.
+    """
+
+    def __init__(self, low: float = 0.35, high: float = 0.65):
+        if not 0.0 <= low < high <= 1.0:
+            raise ValueError(f"need 0 <= low < high <= 1, got [{low}, {high}]")
+        self.low = low
+        self.high = high
+
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        """Returns [batch] rewards in (-inf, 0], differentiable in x."""
+        gc = gc_content(x)
+        excess = torch.relu(self.low - gc) + torch.relu(gc - self.high)
+        return -excess.pow(2)
+
+    def diagnostics(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+        with torch.no_grad():
+            gc = gc_content(x)
+            return {
+                "gc_content": gc,
+                "gc_penalty": self(x),
+                "fraction_outside_window": (
+                    (gc < self.low) | (gc > self.high)
+                ).to(gc.dtype),
+            }
