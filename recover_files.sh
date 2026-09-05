@@ -82,7 +82,11 @@ for rel in "$@"; do
   fi
   echo "    found in archive as: $inner"
 
-  unzip -qo "$ZIP" "$inner" -d "$EXTRACT"
+  # Not -q. Extracting a multi-gigabyte member takes minutes, and silence
+  # here is indistinguishable from a hang -- which has now caused confusion
+  # three separate times in this project.
+  echo "    extracting (this takes a few minutes for a large checkpoint)..."
+  unzip -o "$ZIP" "$inner" -d "$EXTRACT"
   src="$EXTRACT/$inner"
 
   # Verify before overwriting: replacing a broken file with another broken
