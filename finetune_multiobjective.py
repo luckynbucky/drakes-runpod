@@ -401,6 +401,27 @@ def main() -> None:
     args = build_argparser().parse_args()
     print(args)
 
+    # gReLU builds its LightningModel with a wandb logger, so loading an oracle
+    # triggers wandb on a machine that has never logged in -- and wandb answers
+    # by opening an interactive account prompt. In a debug run that is merely
+    # annoying; in an unattended sweep under tmux it is a silent hang waiting
+    # for a keypress. Debug runs report nowhere, so disable it outright.
+    # setdefault, so an explicit WANDB_MODE in the environment still wins.
+    if args.name == "debug":
+        os.environ.setdefault("WANDB_MODE", "disabled")
+    elif not os.environ.get("WANDB_MODE") and not os.path.exists(
+        os.path.expanduser("~/.netrc")
+    ):
+        # A real run with no credentials on disk would hit the same prompt.
+        # Fall back to offline logging, which writes locally and can be synced
+        # later with `wandb sync`, rather than blocking.
+        print(
+            "No wandb credentials found; setting WANDB_MODE=offline. "
+            "Run `wandb login` first, or export WANDB_MODE=disabled, to choose "
+            "explicitly."
+        )
+        os.environ["WANDB_MODE"] = "offline"
+
     ckpt_path = os.path.join(args.base_path, "mdlm/outputs_gosai/pretrained.ckpt")
     log_base_dir = os.path.join(args.base_path, "mdlm/reward_bp_results_final")
 

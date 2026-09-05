@@ -379,7 +379,15 @@ python finetune_multiobjective.py \
 ```
 
 Use `tmux` (detach with ctrl-b d) or `nohup`. An SSH drop otherwise kills the
-job. Either `wandb login` first or export `WANDB_MODE=offline`.
+job.
+
+On wandb: gReLU's LightningModel carries a wandb logger, so loading an oracle
+triggers wandb even when this script never calls it, and with no credentials
+on disk wandb opens an interactive account prompt -- a silent hang in an
+unattended run. The script now disables wandb for `--name debug` and falls
+back to offline logging otherwise. To choose deliberately, either run
+`wandb login` (worth it for comparing five sweep runs) or export
+`WANDB_MODE=disabled`.
 
 ### 6e. The sweep
 
