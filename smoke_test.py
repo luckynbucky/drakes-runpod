@@ -11,6 +11,7 @@ looks like a corrupt download. This checks the things that break, up front.
 import argparse
 import importlib
 import os
+import zipfile
 import pathlib
 import sys
 
@@ -97,18 +98,50 @@ def check_imports():
         record(FAIL, "import grelu", str(exc)[:80])
 
 
+def verify_checkpoint(path):
+    """Is this checkpoint actually readable, or just present?
+
+    A torch checkpoint is a zip archive. A truncated one -- a download that
+    stopped short, an extraction that ran out of disk -- still has a plausible
+    name and size on disk, and only fails when something tries to load it,
+    which in a training run is many minutes in. Opening the archive reads its
+    central directory, which is the exact structure that goes missing, and is
+    fast because nothing is decompressed.
+
+    Returns (ok, detail).
+    """
+    try:
+        with zipfile.ZipFile(path) as archive:
+            return True, f"{len(archive.namelist())} entries"
+    except zipfile.BadZipFile as exc:
+        return False, f"CORRUPT: {exc}"
+    except Exception as exc:  # noqa: BLE001 - report whatever went wrong
+        # Checkpoints written before torch 1.6 are raw pickles rather than
+        # zips, so a non-zip file is not automatically broken.
+        return True, f"not a zip archive ({type(exc).__name__}), skipped"
+
+
 def check_data(base_path, files, label):
     base = pathlib.Path(base_path)
     for rel in files:
         target = base / rel
-        if target.exists():
-            if target.is_dir():
-                record(PASS, f"{label}: {rel}", "directory")
-            else:
-                size_mb = target.stat().st_size / 1024**2
-                record(PASS, f"{label}: {rel}", f"{size_mb:.1f} MB")
-        else:
+        if not target.exists():
             record(FAIL, f"{label}: {rel}", "missing")
+            continue
+        if target.is_dir():
+            record(PASS, f"{label}: {rel}", "directory")
+            continue
+
+        size_mb = target.stat().st_size / 1024**2
+        if target.suffix in (".ckpt", ".pt"):
+            ok, detail = verify_checkpoint(target)
+            record(
+                PASS if ok else FAIL,
+                f"{label}: {rel}",
+                f"{size_mb:.1f} MB, {detail}",
+            )
+        else:
+            record(PASS, f"{label}: {rel}", f"{size_mb:.1f} MB")
 
 
 def check_patched(repo):
