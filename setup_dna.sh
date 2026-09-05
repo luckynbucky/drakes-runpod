@@ -202,16 +202,43 @@ MSG
   fi
 
   echo "==> Unzipping (quiet; a large archive can sit here several minutes)"
-  unzip -q "$ZIP_PATH" -d "$BASE_PATH"
-  # The zip may contain a single top-level folder; flatten it if so.
-  if [ -d "$BASE_PATH/DRAKES_data" ] && [ ! -d "$BASE_PATH/mdlm" ]; then
-    mv "$BASE_PATH/DRAKES_data"/* "$BASE_PATH/"
-    rmdir "$BASE_PATH/DRAKES_data"
-  fi
+  # -o overwrites without asking. Without it, re-extracting over an earlier
+  # attempt stops on an interactive "replace ...? [y]es, [n]o, [A]ll" prompt,
+  # which in a script left running unattended means it waits forever for a
+  # keypress nobody is there to give.
+  unzip -qo "$ZIP_PATH" -d "$BASE_PATH"
   rm -f "$ZIP_PATH"
   echo "==> Free space after extract: $(free_gb "$BASE_PATH") GB"
 else
   echo "==> Data already present at $BASE_PATH/mdlm, skipping download"
+fi
+
+# The archive wraps everything in one top-level directory, and its name is not
+# stable across releases -- the current bundle uses data_and_model. The DRAKES
+# code expects mdlm/, proteindpo_data/ and the rest directly under base_path,
+# so flatten whatever the wrapper happens to be called rather than matching a
+# hardcoded name. This sits outside the download guard above so that it also
+# repairs a tree left nested by an earlier version of this script.
+if [ ! -d "$BASE_PATH/mdlm" ]; then
+  for wrapper in "$BASE_PATH"/*/; do
+    [ -d "$wrapper" ] || continue
+    if [ -d "${wrapper}mdlm" ]; then
+      echo "==> Flattening $(basename "$wrapper")/ into $BASE_PATH"
+      # A move within one filesystem only rewrites directory entries, so this
+      # is instant regardless of how many gigabytes are involved.
+      mv "$wrapper"* "$BASE_PATH"/
+      mv "$wrapper".[!.]* "$BASE_PATH"/ 2>/dev/null || true
+      rmdir "$wrapper"
+      break
+    fi
+  done
+fi
+
+if [ ! -d "$BASE_PATH/mdlm" ]; then
+  echo "ERROR: $BASE_PATH/mdlm not found after extraction. What is there:"
+  ls -la "$BASE_PATH"
+  echo "The DRAKES code reads base_path/mdlm/..., so that tree has to exist."
+  exit 1
 fi
 
 # --- 7. Point the code at BASE_PATH --------------------------------------
