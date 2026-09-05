@@ -542,6 +542,14 @@ def main() -> None:
         stem_length=args.hairpin_stem_length,
         min_loop=args.hairpin_min_loop,
     )
+    if torch.cuda.is_available():
+        total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+        params = torch.cuda.memory_allocated() / 1024**3
+        print(
+            f"GPU: {total:.1f} GB total, {params:.2f} GB held by model "
+            f"parameters, ~{total - params:.1f} GB left for activations"
+        )
+
     baseline = physics_reward.scorer.unstructured_baseline()
     print(
         f"hairpin scorer: {physics_reward.scorer.n_stems} candidate stems, "
@@ -556,17 +564,54 @@ def main() -> None:
     if args.w_phys == 0:
         print("  w_phys is 0: this run reproduces stock DRAKES.")
 
-    fine_tune(
-        new_model,
-        reward_model,
-        reward_model_eval,
-        old_model,
-        args,
-        physics_reward,
-        log_path,
-        metrics_path,
-        save_path,
-    )
+    try:
+        fine_tune(
+            new_model,
+            reward_model,
+            reward_model_eval,
+            old_model,
+            args,
+            physics_reward,
+            log_path,
+            metrics_path,
+            save_path,
+        )
+    except torch.cuda.OutOfMemoryError:
+        peak = torch.cuda.max_memory_allocated() / 1024**3
+        total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+        raise SystemExit(
+            f"\nCUDA out of memory: peaked at {peak:.2f} GB of {total:.1f} GB "
+            f"at --batch_size {args.batch_size}.\n"
+            "\n"
+            "The dominant cost is the KL loop, not the reward. It runs\n"
+            f"--total_num_steps ({args.total_num_steps}) iterations, each with a\n"
+            "forward pass whose activations are retained for backward.\n"
+            "\n"
+            "Levers, cheapest first. The first two preserve the method exactly:\n"
+            "\n"
+            "  1. Halve --batch_size and double --num_accum_steps. The effective\n"
+            "     batch, and so the optimization, is unchanged:\n"
+            f"       --batch_size {max(1, args.batch_size // 2)} "
+            f"--num_accum_steps {args.num_accum_steps * 2}\n"
+            "\n"
+            "  2. --eval_oracle_device cpu, which frees the held-out oracle's\n"
+            "     parameters. It is reporting-only and never enters the loss.\n"
+            "\n"
+            "  3. --truncate_kl True computes the KL over only the last\n"
+            f"     --truncate_steps ({args.truncate_steps}) steps instead of all\n"
+            f"     {args.total_num_steps}. This is a DRAKES option, but it changes\n"
+            "     the regularizer, so record it as a deviation from the paper's\n"
+            "     default rather than a free saving.\n"
+            "\n"
+            "  4. Lower --truncate_steps. This changes the method itself: fewer\n"
+            "     diffusion steps are differentiated through. Last resort, and\n"
+            "     the memory-versus-reward curve is worth plotting if you do.\n"
+            "\n"
+            "Also try, before any of the above:\n"
+            "  export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True\n"
+            "which reduces fragmentation. Failing on a 2 MiB allocation, as\n"
+            "opposed to a large one, is a sign fragmentation is contributing."
+        )
 
 
 if __name__ == "__main__":
