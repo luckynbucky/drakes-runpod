@@ -116,7 +116,9 @@ pip install --prefer-binary \
   timm rich omegaconf
 # biopython is not a DRAKES dependency; the physics reward test suite validates
 # against its independent implementation of the same thermodynamic model.
-pip install --prefer-binary "biopython==1.85"
+# remotezip lets recover_files.py pull a single member out of the data
+# archive over HTTP range requests, instead of re-downloading all of it.
+pip install --prefer-binary "biopython==1.85" remotezip
 pip install --prefer-binary --upgrade hydra-core hydra-submitit-launcher
 
 # causal-conv1d is listed in env.sh because upstream MDLM can use a Mamba
