@@ -18,39 +18,55 @@ text.
 
 ## The physics rewards
 
-`physics_reward.py` and `hairpin_reward.py` supply exact, differentiable
-rewards that can be optimized alongside DRAKES's learned gReLU oracle. Both
-consume the relaxed one-hot tensors the Gumbel-softmax sampler emits, so they
-plug into the paper's direct-backpropagation objective without a
-policy-gradient estimator.
+`physics_reward.py` is exact nearest-neighbor duplex thermodynamics, validated
+against Biopython's independent implementation to 4.6e-13 C. `hairpin_reward.py`
+is a differentiable **proxy** for hairpin propensity -- not a folding free
+energy, and the distinction is load-bearing.
 
 Use the hairpin term as the design constraint and duplex dG as a diagnostic.
 `analyze_gc_confound.py` explains why. Duplex free energy is 99.6% explained by
 base composition (R^2 = 0.996), so a model hits a dG target by shifting GC
-content rather than by learning anything about arrangement. Hairpin propensity
-drops that to R^2 = 0.69, and measured against each metric's own
-composition-driven range, its response to arrangement is 11.3% versus 1.5% --
-about 7.5x more order-sensitive.
-
-The operational difference matters more than either ratio: at fixed 50% GC,
+content rather than learning anything about arrangement. Hairpin propensity
+drops that to R^2 = 0.69, and against each metric's own composition-driven
+range its response to arrangement is 11.3% versus 1.5%. At fixed 50% GC,
 shuffling alone moves hairpin dG by up to 4.3 kcal/mol against a tolerance of
--3.0, so arrangement by itself routinely decides whether the constraint is met.
-Shuffling moves duplex dG by 0.010 kcal/mol/bp, which cannot reach any target
-worth setting. Hairpin propensity is also the property that actually governs
-whether a construct can be synthesized.
+-3.0, so arrangement by itself decides whether the constraint is met.
 
-Its residual GC correlation is real physics, not an artifact -- GC pairs stack
-more strongly, so GC-rich sequences genuinely do form more stable hairpins.
-Report composition alongside the constraint rather than treating the term as
-purely structural.
+### What the proxy is, and is not
 
+`validate_against_vienna.py` measures it against ViennaRNA's full
+Zuker/McCaskill model with Mathews DNA parameters at 37 C. Spearman rank
+correlation against ViennaRNA MFE:
 
-**Start with the DNA experiment.** It is a small model, the environment installs
-cleanly, and a fine-tuning run finishes in hours rather than days. The protein
-experiment needs MultiFlow, PyRosetta, and an older CUDA build; save it for
-after the first one works.
+| sequence set              | stem 6 | stem 8 | stem 10 |
+| ------------------------- | ------ | ------ | ------- |
+| random, GC 0.30-0.70      | 0.91   | 0.91   | 0.90    |
+| random, GC fixed at 0.50  | 0.59   | 0.57   | 0.59    |
+| planted stems, 4-15 bp    | 0.73   | 0.86   | **0.94**|
 
----
+Read honestly:
+
+* The 0.91 across varying GC is inflated by both measures tracking composition.
+* At fixed composition, agreement is **moderate (0.57-0.59) and does not
+  improve with stem length**. That makes it structural rather than a tuning
+  problem: it comes from the interior loops, bulges, multiloops and unfolded
+  reference state the proxy omits.
+* On deliberate contiguous hairpins agreement is high and rises with stem
+  length, reaching 0.94.
+* Only **33% of the most-structured decile** at fixed GC is shared with
+  ViennaRNA, and that figure is also invariant to stem length.
+
+So the proxy is a **strong-hairpin detector, not a folding-energy surrogate**.
+That may be the right instrument regardless, since synthesis is disrupted by a
+single strong stem rather than by the diffuse marginal structure random
+sequences carry -- but that is a hypothesis these numbers do not establish, and
+it should be presented as one.
+
+The experimental design that follows: **train on the proxy, evaluate final
+sequences with ViennaRNA.** Whether the improvement transfers is the result
+worth reporting, in either direction. A proxy that guides optimization
+successfully is a useful contribution; a proxy that does not transfer is a
+finding, not a failure.
 
 ## What you are actually going to run
 

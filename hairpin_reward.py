@@ -98,7 +98,12 @@ class HairpinScorer:
 
     Args:
         length: sequence length in bases.
-        stem_length: number of base pairs per candidate stem.
+        stem_length: base pairs per candidate stem. The default of 10 comes
+            from validate_against_vienna.py: rank agreement with ViennaRNA on
+            planted hairpins rises with stem length (0.61 at 5, 0.86 at 8,
+            0.94 at 10), while agreement at fixed GC is flat, and 10 leaves
+            ~42% of random sequences past the default tolerance, so the
+            one-sided penalty has a live gradient rather than a flat one.
         min_loop: smallest permitted hairpin loop, in nucleotides.
         temperature_k: temperature for both stacking energies and the ensemble.
     """
@@ -106,7 +111,7 @@ class HairpinScorer:
     def __init__(
         self,
         length: int,
-        stem_length: int = 8,
+        stem_length: int = 10,
         min_loop: int = 3,
         temperature_k: float = TEMP_37C,
     ):

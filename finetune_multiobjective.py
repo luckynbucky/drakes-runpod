@@ -39,10 +39,10 @@ import argparse
 import datetime
 import json
 import os
+import random
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 import wandb
 from hydra import compose, initialize
 from hydra.core.global_hydra import GlobalHydra
@@ -84,6 +84,13 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--alpha", type=float, default=0.001)
     parser.add_argument("--alpha_schedule_warmup", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="path to a checkpoint_*.pt to resume from, restoring model, "
+        "optimizer, epoch and RNG state",
+    )
 
     # --- multi-objective additions ---
     physics = parser.add_argument_group("physics constraint")
@@ -105,7 +112,8 @@ def build_argparser() -> argparse.ArgumentParser:
         "Less negative is stricter.",
     )
     physics.add_argument(
-        "--hairpin_stem_length", type=int, default=8, help="base pairs per candidate stem"
+        "--hairpin_stem_length", type=int, default=10,
+        help="base pairs per candidate stem; see validate_against_vienna.py"
     )
     physics.add_argument(
         "--hairpin_min_loop", type=int, default=3, help="smallest permitted hairpin loop"
@@ -127,18 +135,59 @@ def summarize(values: list) -> float:
     return float(np.mean(values)) if values else float("nan")
 
 
+def save_checkpoint(path, new_model, optim, epoch, args, initial_gap) -> None:
+    """Write full training state, not just weights.
+
+    Weights alone cannot resume a run: the Adam moments and the RNG streams are
+    part of the trajectory, and restarting without them is a different run that
+    merely begins from the same parameters.
+    """
+    torch.save(
+        {
+            "epoch": epoch,
+            "model": new_model.state_dict(),
+            "optimizer": optim.state_dict(),
+            "args": vars(args),
+            "initial_gap": initial_gap,
+            "rng_torch": torch.get_rng_state(),
+            "rng_cuda": (
+                torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+            ),
+            "rng_numpy": np.random.get_state(),
+            "rng_python": random.getstate(),
+        },
+        path,
+    )
+
+
 def fine_tune(new_model, reward_model, reward_model_eval, old_model, args,
               physics_reward, log_path, metrics_path, save_path, eps=1e-5):
-    with open(log_path, "w") as handle:
-        handle.write(repr(args) + "\n")
-
     new_model.config.finetuning.truncate_steps = args.truncate_steps
     new_model.config.finetuning.gumbel_softmax_temp = args.gumbel_temp
     new_model.train()
     torch.set_grad_enabled(True)
     optim = torch.optim.Adam(new_model.parameters(), lr=args.learning_rate)
 
-    for epoch_num in range(args.num_epochs):
+    start_epoch = 0
+    initial_gap = [None]  # boxed so the epoch loop can set it on first pass
+    if args.resume:
+        state = torch.load(args.resume, map_location=new_model.device)
+        new_model.load_state_dict(state["model"])
+        optim.load_state_dict(state["optimizer"])
+        start_epoch = state["epoch"] + 1
+        initial_gap = [state.get("initial_gap")]
+        torch.set_rng_state(state["rng_torch"].cpu())
+        if state.get("rng_cuda") is not None and torch.cuda.is_available():
+            torch.cuda.set_rng_state_all([s.cpu() for s in state["rng_cuda"]])
+        np.random.set_state(state["rng_numpy"])
+        random.setstate(state["rng_python"])
+        print(f"==> resumed from {args.resume}, continuing at epoch {start_epoch}")
+
+    # Append rather than truncate when resuming, so the log survives.
+    with open(log_path, "a" if args.resume else "w") as handle:
+        handle.write(repr(args) + "\n")
+
+    for epoch_num in range(start_epoch, args.num_epochs):
         # Everything below is accumulated across gradient-accumulation steps and
         # reported once per epoch.
         bio_train, bio_eval = [], []
@@ -156,7 +205,7 @@ def fine_tune(new_model, reward_model, reward_model_eval, old_model, args,
                 copy_flag_list,
             ) = new_model._sample_finetune_gradient(
                 eval_sp_size=args.batch_size, copy_flag_temp=args.copy_flag_temp
-            )  # [bsz, seqlen, 4], relaxed one-hot
+            )  # [bsz, seqlen, 4]; hard one-hot forward, relaxed gradient
 
             # --- biological reward, on the relaxed sample (differentiable) ---
             reward_bio = reward_model(torch.transpose(sample, 1, 2)).squeeze(-1)[:, 0]
@@ -167,8 +216,14 @@ def fine_tune(new_model, reward_model, reward_model_eval, old_model, args,
             sample_f32 = sample.float()
             reward_phys = physics_reward(sample_f32)
 
-            # --- hard sample, for honest reporting only (never in the loss) ---
-            sample_hard = F.one_hot(sample.argmax(2), num_classes=4).float()
+            # The sampler returns a straight-through estimate,
+            #     x_soft + (x_hard - x_soft).detach()
+            # so the forward value is ALREADY a hard one-hot and only the
+            # gradient flows through the relaxation. Re-discretizing with argmax
+            # would be a no-op. This also means the physics reward above is
+            # evaluated on the real discrete sequence, with pairing gates that
+            # are exactly 0 or 1 rather than soft blends.
+            sample_hard = sample.detach()
             with torch.no_grad():
                 hard_t = torch.transpose(sample_hard, 1, 2)
                 bio_train.append(
@@ -235,12 +290,27 @@ def fine_tune(new_model, reward_model, reward_model_eval, old_model, args,
             reward_losses.append(reward_loss.item())
             kl_losses.append(kl_loss.item())
 
+        gap = summarize(bio_train) - summarize(bio_eval)
+        if initial_gap[0] is None:
+            # The two oracles are separately trained and separately calibrated,
+            # so they disagree before any optimization happens. The raw gap is
+            # therefore oracle disagreement, not evidence of reward hacking.
+            # Anchor on the first epoch and report the CHANGE, which is the
+            # quantity that can actually indicate the policy exploiting the
+            # oracle it is trained against.
+            initial_gap[0] = gap
+            print(f"  baseline oracle disagreement at epoch 0: {gap:+.4f}")
+
         record = {
             "epoch": epoch_num,
             "bio_reward_train_oracle": summarize(bio_train),
             "bio_reward_heldout_oracle": summarize(bio_eval),
-            "reward_hacking_gap": summarize(bio_train) - summarize(bio_eval),
+            "oracle_disagreement": gap,
+            "oracle_disagreement_at_epoch0": initial_gap[0],
+            "reward_hacking_gap": gap - initial_gap[0],
             "physics_reward": summarize(phys_rewards),
+            "weighted_bio": args.w_bio * summarize(bio_train),
+            "weighted_phys": args.w_phys * summarize(phys_rewards),
             "hairpin_dg_ensemble": summarize(hairpin_dg),
             "hairpin_violation_rate": summarize(hairpin_violations),
             "gc_content": summarize(gc_fractions),
@@ -254,10 +324,13 @@ def fine_tune(new_model, reward_model, reward_model_eval, old_model, args,
 
         print(
             f"epoch {epoch_num:>4}  "
-            f"bio(train) {record['bio_reward_train_oracle']:.4f}  "
-            f"bio(held-out) {record['bio_reward_heldout_oracle']:.4f}  "
-            f"gap {record['reward_hacking_gap']:+.4f}  "
-            f"hairpin dG {record['hairpin_dg_ensemble']:.3f}  "
+            f"bio {record['bio_reward_train_oracle']:>8.4f} "
+            f"(w{record['weighted_bio']:+.3f})  "
+            f"phys {record['physics_reward']:>8.4f} "
+            f"(w{record['weighted_phys']:+.3f})  "
+            f"held-out {record['bio_reward_heldout_oracle']:>8.4f}  "
+            f"hack {record['reward_hacking_gap']:+.4f}  "
+            f"hairpin {record['hairpin_dg_ensemble']:>7.3f}  "
             f"viol {record['hairpin_violation_rate']:.2f}  "
             f"GC {record['gc_content']:.3f}  "
             f"KL {record['kl_loss']:.4f}"
@@ -271,12 +344,29 @@ def fine_tune(new_model, reward_model, reward_model_eval, old_model, args,
         if args.name != "debug":
             wandb.log(record)
 
+        # A single rolling checkpoint, overwritten every epoch. The model is a
+        # small CNN so this is cheap, and it caps the cost of any interruption
+        # -- Ctrl-C, a lost pod, an OOM -- at one epoch rather than the run.
+        save_checkpoint(
+            os.path.join(save_path, "checkpoint_latest.pt"),
+            new_model, optim, epoch_num, args, initial_gap[0],
+        )
+
         if (epoch_num + 1) % args.save_every_n_epochs == 0:
-            torch.save(
-                new_model.state_dict(),
-                os.path.join(save_path, f"model_{epoch_num}.ckpt"),
+            save_checkpoint(
+                os.path.join(save_path, f"checkpoint_epoch{epoch_num}.pt"),
+                new_model, optim, epoch_num, args, initial_gap[0],
             )
             print(f"  checkpoint saved at epoch {epoch_num}")
+
+    # Always write a final checkpoint regardless of the interval. A short run --
+    # the two-epoch smoke test, or anything ending before the first save
+    # boundary -- would otherwise finish with nothing on disk.
+    final_path = os.path.join(save_path, "checkpoint_final.pt")
+    save_checkpoint(
+        final_path, new_model, optim, args.num_epochs - 1, args, initial_gap[0]
+    )
+    print(f"final checkpoint: {final_path}")
 
     if args.name != "debug":
         wandb.finish()
@@ -293,6 +383,21 @@ def main() -> None:
     initialize(config_path="configs_gosai", job_name="load_model")
     cfg = compose(config_name="config_gosai.yaml")
     cfg.eval.checkpoint_path = ckpt_path
+
+    # The sampler reads cfg.sampling.steps when called without num_steps, while
+    # the KL loop iterates args.total_num_steps. Upstream DRAKES leaves these
+    # independent and they agree only because both happen to default to 128.
+    # Bind them, so --total_num_steps cannot silently desynchronise the two and
+    # compute KL over a subset of the trajectory with no error raised.
+    cfg.sampling.steps = args.total_num_steps
+    assert 1 <= args.truncate_steps <= args.total_num_steps, (
+        f"--truncate_steps {args.truncate_steps} must lie in "
+        f"[1, {args.total_num_steps}]"
+    )
+    assert args.seq_length == cfg.model.length, (
+        f"--seq_length {args.seq_length} does not match cfg.model.length "
+        f"{cfg.model.length}; the hairpin scorer would reject the samples"
+    )
 
     curr_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     if args.name == "debug":
@@ -326,8 +431,18 @@ def main() -> None:
     )
     reward_model = oracle.get_gosai_oracle(mode="train").to(new_model.device)
     reward_model_eval = oracle.get_gosai_oracle(mode="eval").to(new_model.device)
-    reward_model.eval()
-    reward_model_eval.eval()
+
+    # Only new_model is optimized. Freeze the rest: optim.zero_grad() clears
+    # gradients for the optimizer's parameters alone, so without this the
+    # reference model and both oracles accumulate .grad buffers that are
+    # computed on every backward pass and never read.
+    #
+    # Freeze the parameters rather than wrapping the forward pass in
+    # torch.no_grad(). The training reward has to keep its graph back through
+    # the sampler; no_grad would sever exactly the path the loss needs.
+    for frozen in (old_model, reward_model, reward_model_eval):
+        frozen.eval()
+        frozen.requires_grad_(False)
 
     physics_reward = HairpinPenaltyReward(
         length=args.seq_length,
