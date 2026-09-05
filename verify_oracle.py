@@ -48,7 +48,17 @@ def main() -> int:
         action="store_true",
         help="apply the grelu_offline patch before loading",
     )
+    ap.add_argument(
+        "--drakes-dir",
+        default="/workspace/DRAKES/drakes_dna",
+        help="directory holding DRAKES's oracle.py, added to sys.path so this "
+        "can be run from anywhere",
+    )
     args = ap.parse_args()
+
+    # oracle.py lives in the DRAKES checkout, not next to this file.
+    if os.path.isdir(args.drakes_dir) and args.drakes_dir not in sys.path:
+        sys.path.insert(0, args.drakes_dir)
 
     if args.skip_artifact:
         import grelu_offline
@@ -67,12 +77,14 @@ def main() -> int:
         print("could not find a sequence column", file=sys.stderr)
         return 1
 
-    # The measured activities are the numeric columns; the oracle emits three
-    # outputs, one per cell type, in the dataset's own column order.
+    # The measured activities are the numeric columns, minus pandas' unnamed
+    # index column, which is just row order and correlates with nothing.
     label_cols = [
         c
         for c in frame.columns
-        if c != seq_col and pd.api.types.is_numeric_dtype(frame[c])
+        if c != seq_col
+        and pd.api.types.is_numeric_dtype(frame[c])
+        and not c.startswith("Unnamed")
     ]
     print(f"  sequence column: {seq_col}")
     print(f"  numeric columns: {label_cols}")
@@ -84,7 +96,17 @@ def main() -> int:
     seqs = sample[seq_col].tolist()
     print(f"\nscoring {len(seqs)} sequences with the '{args.mode}' oracle...")
 
-    import oracle
+    try:
+        import oracle
+    except ImportError:
+        print(
+            f"\ncould not import DRAKES's oracle module.\n"
+            f"Looked in: {args.drakes_dir}\n"
+            f"Pass --drakes-dir if your checkout is elsewhere, or run this from\n"
+            f"inside the drakes_dna directory.",
+            file=sys.stderr,
+        )
+        return 1
 
     preds = oracle.cal_gosai_pred(seqs, mode=args.mode)
     preds = np.asarray(preds)
@@ -93,6 +115,8 @@ def main() -> int:
     if preds.ndim == 1:
         preds = preds[:, None]
 
+    # DRAKES trains against preds[:, 0], so out[0] is the reward the whole
+    # experiment optimizes. Its correlation is the one that matters most.
     print(f"\n{'measured column':<24}{'vs pred':<10}{'pearson':>10}{'spearman':>11}")
     print("-" * 55)
     best = 0.0
@@ -102,7 +126,8 @@ def main() -> int:
             rho = spearman(preds[:, j], sample[col].values)
             if abs(r) > abs(best):
                 best = r
-            print(f"{col:<24}{f'out[{j}]':<10}{r:>10.3f}{rho:>11.3f}")
+            marker = "  <- DRAKES reward" if j == 0 and col == label_cols[0] else ""
+            print(f"{col:<24}{f'out[{j}]':<10}{r:>10.3f}{rho:>11.3f}{marker}")
 
     print(f"\nstrongest correlation: {best:.3f}")
     if abs(best) > 0.5:
