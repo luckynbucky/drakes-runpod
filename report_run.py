@@ -39,13 +39,27 @@ COLUMNS = [
 
 
 def load(path: str):
-    """Accept a run directory or a metrics.jsonl path."""
+    """Accept a run directory or a metrics.jsonl path.
+
+    A glob over the results directory also matches loose files -- the data
+    bundle ships the authors' reference finetuned.ckpt there -- so anything
+    that is not a directory or a .jsonl file is skipped rather than read as
+    text. Binary opened as UTF-8 raises deep inside the read loop and stops
+    the whole report.
+    """
     if os.path.isdir(path):
         path = os.path.join(path, "metrics.jsonl")
+    elif not path.endswith(".jsonl"):
+        return None, None
     if not os.path.isfile(path):
         return None, None
+
     records = []
-    with open(path) as handle:
+    try:
+        handle = open(path, encoding="utf-8", errors="replace")
+    except OSError:
+        return None, None
+    with handle:
         for line in handle:
             line = line.strip()
             if line:
@@ -107,7 +121,14 @@ def main() -> int:
         loaded.append((os.path.basename(path.rstrip("/")), records, config))
 
     if not loaded:
-        print("no runs with metrics found", file=sys.stderr)
+        print(
+            "No runs with metrics.jsonl found in:\n  "
+            + "\n  ".join(paths)
+            + "\n\nEach run writes metrics.jsonl into its own directory under\n"
+            "  <base_path>/mdlm/reward_bp_results_final/<run name>/\n"
+            "so point this at those directories, or at the parent with a glob.",
+            file=sys.stderr,
+        )
         return 1
 
     for name, records, config in loaded:
