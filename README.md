@@ -14,6 +14,8 @@ text.
 | `physics_reward.py` | Differentiable nearest-neighbor duplex thermodynamics (dG, Tm, GC) |
 | `hairpin_reward.py` | Differentiable hairpin propensity, the synthesizability constraint |
 | `analyze_gc_confound.py` | Checks whether a physics reward is secretly just GC content |
+| `validate_against_vienna.py` | Measures the hairpin proxy against ViennaRNA's full folding model |
+| `finetune_multiobjective.py` | DRAKES fine-tuning with the physics constraint added |
 | `test_*.py` | Validation suites; run them before spending GPU time |
 
 ## The physics rewards
@@ -306,9 +308,15 @@ cd /workspace/DRAKES/drakes_dna
 python finetune_multiobjective.py \
   --name debug \
   --base_path /workspace/drakes_data/ \
-  --num_epochs 2 --num_accum_steps 1 --batch_size 8 \
+  --num_epochs 2 --num_accum_steps 1 --batch_size 8 --save_every_n_epochs 1 \
   --w_phys 0.5
 ```
+
+`--save_every_n_epochs 1` matters here: the default interval is 50, so a
+two-epoch run would otherwise write no periodic checkpoint. A final
+checkpoint is always written regardless, and every epoch overwrites
+`checkpoint_latest.pt`, so an interrupted run resumes with
+`--resume <run_dir>/checkpoint_latest.pt` instead of starting over.
 
 Read the first epoch line carefully before going further. It reports
 `bio(train)`, `bio(held-out)`, `hairpin dG`, `viol` (fraction of sequences
