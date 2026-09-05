@@ -85,6 +85,15 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--alpha_schedule_warmup", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
+        "--eval_oracle_device",
+        type=str,
+        default=None,
+        help="device for the held-out oracle, e.g. 'cpu'. It is only ever used "
+        "for reporting and never enters the loss, so parking it off the GPU "
+        "frees its parameters on a smaller card, at the cost of one transfer "
+        "per accumulation step.",
+    )
+    parser.add_argument(
         "--resume",
         type=str,
         default=None,
@@ -168,6 +177,8 @@ def fine_tune(new_model, reward_model, reward_model_eval, old_model, args,
     torch.set_grad_enabled(True)
     optim = torch.optim.Adam(new_model.parameters(), lr=args.learning_rate)
 
+    eval_device = next(reward_model_eval.parameters()).device
+
     start_epoch = 0
     initial_gap = [None]  # boxed so the epoch loop can set it on first pass
     if args.resume:
@@ -190,6 +201,8 @@ def fine_tune(new_model, reward_model, reward_model_eval, old_model, args,
     for epoch_num in range(start_epoch, args.num_epochs):
         # Everything below is accumulated across gradient-accumulation steps and
         # reported once per epoch.
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
         bio_train, bio_eval = [], []
         phys_rewards, hairpin_dg, hairpin_violations = [], [], []
         gc_fractions, duplex_dg = [], []
@@ -232,7 +245,10 @@ def fine_tune(new_model, reward_model, reward_model_eval, old_model, args,
                 # The held-out oracle is never optimized against. The gap
                 # between this and bio_train is the reward-hacking signal.
                 bio_eval.append(
-                    reward_model_eval(hard_t).squeeze(-1)[:, 0].mean().item()
+                    reward_model_eval(hard_t.to(eval_device))
+                    .squeeze(-1)[:, 0]
+                    .mean()
+                    .item()
                 )
                 diagnostics = physics_reward.diagnostics(sample_hard)
                 hairpin_dg.append(diagnostics["hairpin_dg_ensemble"].mean().item())
@@ -320,6 +336,14 @@ def fine_tune(new_model, reward_model, reward_model_eval, old_model, args,
             "kl_loss": summarize(kl_losses),
             "grad_norm": tot_grad_norm,
             "alpha": current_alpha,
+            # Peak allocation, not reserved. Backpropagating through an
+            # unrolled sampler is memory-bound, so this is the number that
+            # decides how far batch_size and truncate_steps can go.
+            "peak_gpu_gb": (
+                torch.cuda.max_memory_allocated() / 1024**3
+                if torch.cuda.is_available()
+                else 0.0
+            ),
         }
 
         print(
@@ -333,7 +357,8 @@ def fine_tune(new_model, reward_model, reward_model_eval, old_model, args,
             f"hairpin {record['hairpin_dg_ensemble']:>7.3f}  "
             f"viol {record['hairpin_violation_rate']:.2f}  "
             f"GC {record['gc_content']:.3f}  "
-            f"KL {record['kl_loss']:.4f}"
+            f"KL {record['kl_loss']:.4f}  "
+            f"peak {record['peak_gpu_gb']:.1f}GB"
         )
 
         # JSON lines, so the Pareto plot is a two-line pandas read.
@@ -430,7 +455,9 @@ def main() -> None:
         cfg.eval.checkpoint_path, config=cfg
     )
     reward_model = oracle.get_gosai_oracle(mode="train").to(new_model.device)
-    reward_model_eval = oracle.get_gosai_oracle(mode="eval").to(new_model.device)
+    reward_model_eval = oracle.get_gosai_oracle(mode="eval").to(
+        args.eval_oracle_device or new_model.device
+    )
 
     # Only new_model is optimized. Freeze the rest: optim.zero_grad() clears
     # gradients for the optimizer's parameters alone, so without this the

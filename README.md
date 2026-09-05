@@ -151,7 +151,8 @@ network volume is not. The scripts default to `/workspace` for exactly this
 reason. Without a volume you re-download tens of gigabytes of weights every
 session.
 
-**GPU.** For the DNA experiment an RTX A5000 or A4000 (24 GB) is plenty — the
+**GPU.** An RTX A4000 (16 GB) works but needs a smaller batch; see the
+memory note below. An A5000 or better (24 GB+) is more comfortable — the
 model is small, and the memory pressure comes from unrolling diffusion steps,
 not from parameters. An A100 40 GB is comfortable if you want to raise
 `--batch_size`. For the *protein* experiment you must pick an Ampere card
@@ -264,6 +265,35 @@ The `setup_dna.sh` script registers the conda env as a Jupyter kernel named
 `Python (sedd)` — select it, or the imports will fail.
 
 ---
+
+## GPU memory
+
+The diffusion model is small -- a 128-dim CNN, 51 MB -- but the reward oracles
+are not: `reward_oracle_ft.ckpt` is 2.2 GB and `reward_oracle_eval.ckpt` is
+2.6 GB. The training oracle sits inside the gradient path, so its activations
+are retained for the backward pass alongside the unrolled diffusion steps.
+
+On a 16 GB card, start small and measure rather than guessing:
+
+```bash
+--batch_size 8 --num_accum_steps 16
+```
+
+That holds the effective batch at 128, the same as the 32 x 4 default, so the
+optimization is unchanged. Every epoch logs `peak_gpu_gb` (peak *allocated*,
+not reserved), and the epoch line prints it, so raise `--batch_size` until the
+headroom runs out rather than picking a number blind.
+
+Two more levers if it still will not fit:
+
+* `--eval_oracle_device cpu` moves the held-out oracle off the GPU. It is only
+  used for reporting and never enters the loss, so this costs one transfer per
+  accumulation step and frees its parameters.
+* `--truncate_steps` controls how many of the diffusion steps are
+  backpropagated through, and memory scales roughly linearly in it. Lowering it
+  changes the method, not just the footprint, so treat it as a last resort --
+  and if you do sweep it, the memory-versus-reward curve is itself a result
+  worth plotting.
 
 ## Step 6 - The multi-objective experiment
 
