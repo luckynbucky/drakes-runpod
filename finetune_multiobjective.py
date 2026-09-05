@@ -211,6 +211,7 @@ def fine_tune(new_model, reward_model, reward_model_eval, old_model, args,
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
         bio_train, bio_eval = [], []
+        cell_hepg2, cell_k562, cell_sknsh, specificity = [], [], [], []
         phys_rewards, hairpin_dg, hairpin_violations = [], [], []
         gc_fractions, duplex_dg = [], []
         losses, reward_losses, kl_losses = [], [], []
@@ -246,9 +247,27 @@ def fine_tune(new_model, reward_model, reward_model_eval, old_model, args,
             sample_hard = sample.detach()
             with torch.no_grad():
                 hard_t = torch.transpose(sample_hard, 1, 2)
-                bio_train.append(
-                    reward_model(hard_t).squeeze(-1)[:, 0].mean().item()
-                )
+                preds = reward_model(hard_t).squeeze(-1)  # [batch, 3]
+                bio_train.append(preds[:, 0].mean().item())
+
+                # The oracle predicts three cell lines, and verify_oracle.py
+                # confirmed the ordering against measurement: out[0] HepG2,
+                # out[1] K562, out[2] SK-N-SH. DRAKES rewards out[0] only.
+                #
+                # Worth tracking all three, because activity is strongly
+                # correlated across cell types (0.77-0.84 off-diagonal in that
+                # same check). A model can therefore raise HepG2 by making
+                # sequences into generically stronger enhancers rather than
+                # HepG2-specific ones -- which would not be cell-type-specific
+                # design at all, even though the reward went up. The margin
+                # below separates those two outcomes.
+                if preds.shape[1] >= 3:
+                    cell_hepg2.append(preds[:, 0].mean().item())
+                    cell_k562.append(preds[:, 1].mean().item())
+                    cell_sknsh.append(preds[:, 2].mean().item())
+                    specificity.append(
+                        (preds[:, 0] - preds[:, 1:].mean(dim=1)).mean().item()
+                    )
                 # The held-out oracle is never optimized against. The gap
                 # between this and bio_train is the reward-hacking signal.
                 bio_eval.append(
@@ -331,6 +350,10 @@ def fine_tune(new_model, reward_model, reward_model_eval, old_model, args,
             "oracle_disagreement": gap,
             "oracle_disagreement_at_epoch0": initial_gap[0],
             "reward_hacking_gap": gap - initial_gap[0],
+            "activity_hepg2": summarize(cell_hepg2),
+            "activity_k562": summarize(cell_k562),
+            "activity_sknsh": summarize(cell_sknsh),
+            "hepg2_specificity": summarize(specificity),
             "physics_reward": summarize(phys_rewards),
             "weighted_bio": args.w_bio * summarize(bio_train),
             "weighted_phys": args.w_phys * summarize(phys_rewards),
@@ -359,6 +382,7 @@ def fine_tune(new_model, reward_model, reward_model_eval, old_model, args,
             f"(w{record['weighted_bio']:+.3f})  "
             f"phys {record['physics_reward']:>8.4f} "
             f"(w{record['weighted_phys']:+.3f})  "
+            f"spec {record['hepg2_specificity']:>+7.3f}  "
             f"held-out {record['bio_reward_heldout_oracle']:>8.4f}  "
             f"hack {record['reward_hacking_gap']:+.4f}  "
             f"hairpin {record['hairpin_dg_ensemble']:>7.3f}  "
