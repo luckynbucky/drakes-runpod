@@ -212,6 +212,7 @@ def fine_tune(new_model, reward_model, reward_model_eval, old_model, args,
             torch.cuda.reset_peak_memory_stats()
         bio_train, bio_eval = [], []
         cell_hepg2, cell_k562, cell_sknsh, specificity = [], [], [], []
+        arrangement = []
         phys_rewards, hairpin_dg, hairpin_violations = [], [], []
         gc_fractions, duplex_dg = [], []
         losses, reward_losses, kl_losses = [], [], []
@@ -276,6 +277,29 @@ def fine_tune(new_model, reward_model, reward_model_eval, old_model, args,
                     .mean()
                     .item()
                 )
+                # The decisive control for the GC confound. Shuffling a
+                # sequence preserves its base composition exactly and destroys
+                # its arrangement, so the difference between a sequence's
+                # hairpin energy and that of its own shuffle isolates what the
+                # ARRANGEMENT contributes.
+                #
+                # This matters because GC content and hairpin stability are
+                # correlated (R^2 ~ 0.69): a model can satisfy the constraint by
+                # dropping GC rather than by learning where to put the bases.
+                # If this margin grows, the model learned arrangement. If it
+                # stays flat while GC falls, it only learned composition -- and
+                # the physics term taught it nothing a GC filter could not do.
+                batch_n, length, _ = sample_hard.shape
+                perm = torch.argsort(
+                    torch.rand(batch_n, length, device=sample_hard.device), dim=1
+                )
+                shuffled = torch.gather(
+                    sample_hard, 1, perm.unsqueeze(-1).expand(-1, -1, 4)
+                )
+                dg_actual = physics_reward.scorer.ensemble_free_energy(sample_hard)
+                dg_shuffled = physics_reward.scorer.ensemble_free_energy(shuffled)
+                arrangement.append((dg_actual - dg_shuffled).mean().item())
+
                 diagnostics = physics_reward.diagnostics(sample_hard)
                 hairpin_dg.append(diagnostics["hairpin_dg_ensemble"].mean().item())
                 hairpin_violations.append(
@@ -354,6 +378,10 @@ def fine_tune(new_model, reward_model, reward_model_eval, old_model, args,
             "activity_k562": summarize(cell_k562),
             "activity_sknsh": summarize(cell_sknsh),
             "hepg2_specificity": summarize(specificity),
+            # Negative means the model's arrangement is LESS structured than a
+            # random arrangement of the same bases -- genuine sequence design.
+            # Near zero means the constraint is being met by composition alone.
+            "arrangement_effect": summarize(arrangement),
             "physics_reward": summarize(phys_rewards),
             "weighted_bio": args.w_bio * summarize(bio_train),
             "weighted_phys": args.w_phys * summarize(phys_rewards),
@@ -388,6 +416,7 @@ def fine_tune(new_model, reward_model, reward_model_eval, old_model, args,
             f"hairpin {record['hairpin_dg_ensemble']:>7.3f}  "
             f"viol {record['hairpin_violation_rate']:.2f}  "
             f"GC {record['gc_content']:.3f}  "
+            f"arr {record['arrangement_effect']:>+6.3f}  "
             f"KL {record['kl_loss']:.4f}  "
             f"peak {record['peak_gpu_gb']:.1f}GB"
         )
