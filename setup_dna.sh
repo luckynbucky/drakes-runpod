@@ -151,6 +151,28 @@ free_gb() {
 
 ZIP_PATH="$BASE_PATH/DRAKES_data.zip"
 
+# The archive wraps everything in one top-level directory, and its name is not
+# stable across releases -- the current bundle uses data_and_model. The DRAKES
+# code expects mdlm/, proteindpo_data/ and the rest directly under base_path,
+# so flatten whatever the wrapper happens to be called rather than matching a
+# hardcoded name. This sits outside the download guard above so that it also
+# repairs a tree left nested by an earlier version of this script.
+if [ ! -d "$BASE_PATH/mdlm" ]; then
+  for wrapper in "$BASE_PATH"/*/; do
+    [ -d "$wrapper" ] || continue
+    if [ -d "${wrapper}mdlm" ]; then
+      echo "==> Flattening $(basename "$wrapper")/ into $BASE_PATH"
+      # A move within one filesystem only rewrites directory entries, so this
+      # is instant regardless of how many gigabytes are involved.
+      mv "$wrapper"* "$BASE_PATH"/
+      mv "$wrapper".[!.]* "$BASE_PATH"/ 2>/dev/null || true
+      rmdir "$wrapper"
+      break
+    fi
+  done
+fi
+
+
 if [ ! -d "$BASE_PATH/mdlm" ]; then
   AVAIL=$(free_gb "$BASE_PATH")
   echo "==> Free space at $BASE_PATH: ${AVAIL:-unknown} GB"
@@ -160,13 +182,19 @@ if [ ! -d "$BASE_PATH/mdlm" ]; then
     echo "    compressed size plus the extracted size. This may not fit."
   fi
 
-  if [ ! -f "$ZIP_PATH" ]; then
-    echo "==> Downloading DRAKES_data.zip (this takes a while)"
-    DATA_URL="https://www.dropbox.com/scl/fi/zi6egfppp0o78gr0tmbb1/DRAKES_data.zip?rlkey=yf7w0pm64tlypwsewqc01wmfq&dl=1"
-    # Resume a partial download rather than starting over.
-    wget --continue --show-progress -O "$ZIP_PATH" "$DATA_URL"
+  DATA_URL="https://www.dropbox.com/scl/fi/zi6egfppp0o78gr0tmbb1/DRAKES_data.zip?rlkey=yf7w0pm64tlypwsewqc01wmfq&dl=1"
+  # Presence is not completeness. A half-downloaded archive is still a file,
+  # and treating it as done means every later step fails on a truncated zip.
+  # Reading the central directory back is a cheap completeness check.
+  if [ -f "$ZIP_PATH" ] && unzip -l "$ZIP_PATH" >/dev/null 2>&1; then
+    echo "==> Archive already downloaded and readable, skipping"
   else
-    echo "==> Archive already downloaded, skipping"
+    if [ -f "$ZIP_PATH" ]; then
+      echo "==> Existing archive is truncated; resuming download"
+    else
+      echo "==> Downloading DRAKES_data.zip (this takes a while)"
+    fi
+    wget --continue --show-progress -O "$ZIP_PATH" "$DATA_URL"
   fi
 
   # Measure before committing to the extract, so running out of room produces
@@ -211,27 +239,6 @@ MSG
   echo "==> Free space after extract: $(free_gb "$BASE_PATH") GB"
 else
   echo "==> Data already present at $BASE_PATH/mdlm, skipping download"
-fi
-
-# The archive wraps everything in one top-level directory, and its name is not
-# stable across releases -- the current bundle uses data_and_model. The DRAKES
-# code expects mdlm/, proteindpo_data/ and the rest directly under base_path,
-# so flatten whatever the wrapper happens to be called rather than matching a
-# hardcoded name. This sits outside the download guard above so that it also
-# repairs a tree left nested by an earlier version of this script.
-if [ ! -d "$BASE_PATH/mdlm" ]; then
-  for wrapper in "$BASE_PATH"/*/; do
-    [ -d "$wrapper" ] || continue
-    if [ -d "${wrapper}mdlm" ]; then
-      echo "==> Flattening $(basename "$wrapper")/ into $BASE_PATH"
-      # A move within one filesystem only rewrites directory entries, so this
-      # is instant regardless of how many gigabytes are involved.
-      mv "$wrapper"* "$BASE_PATH"/
-      mv "$wrapper".[!.]* "$BASE_PATH"/ 2>/dev/null || true
-      rmdir "$wrapper"
-      break
-    fi
-  done
 fi
 
 if [ ! -d "$BASE_PATH/mdlm" ]; then
