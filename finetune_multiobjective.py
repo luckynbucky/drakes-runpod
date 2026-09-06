@@ -302,9 +302,12 @@ def fine_tune(new_model, reward_model, reward_model_eval, old_model, args,
                 # This matters because GC content and hairpin stability are
                 # correlated (R^2 ~ 0.69): a model can satisfy the constraint by
                 # dropping GC rather than by learning where to put the bases.
-                # If this margin grows, the model learned arrangement. If it
-                # stays flat while GC falls, it only learned composition -- and
-                # the physics term taught it nothing a GC filter could not do.
+                # dG is more negative for more structure, so a POSITIVE
+                # difference means the real sequence is less structured than a
+                # random arrangement of its own bases -- structure avoided by
+                # placement. Rising and positive is the outcome that supports
+                # the claim; flat while GC falls means only composition was
+                # learned, which a GC filter could have done without training.
                 batch_n, length, _ = sample_hard.shape
                 perm = torch.argsort(
                     torch.rand(batch_n, length, device=sample_hard.device), dim=1
@@ -398,9 +401,15 @@ def fine_tune(new_model, reward_model, reward_model_eval, old_model, args,
             "activity_k562": summarize(cell_k562),
             "activity_sknsh": summarize(cell_sknsh),
             "hepg2_specificity": summarize(specificity),
-            # Negative means the model's arrangement is LESS structured than a
-            # random arrangement of the same bases -- genuine sequence design.
-            # Near zero means the constraint is being met by composition alone.
+            # arr = dG(sequence) - dG(shuffle of the same bases), and dG is
+            # MORE NEGATIVE for more structure. So:
+            #   arr < 0  the sequence is MORE structured than its own shuffle
+            #   arr > 0  the sequence is LESS structured than its own shuffle,
+            #            i.e. the arrangement is actively avoiding structure
+            #   arr ~ 0  arrangement contributes nothing beyond composition
+            # The outcome that supports the project's claim is arr rising and
+            # positive: structure avoided by where the bases sit, not by which
+            # bases were chosen.
             "arrangement_effect": summarize(arrangement),
             "physics_reward": summarize(phys_rewards),
             "weighted_bio": args.w_bio * summarize(bio_train),
