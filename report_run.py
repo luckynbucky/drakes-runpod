@@ -166,8 +166,13 @@ def main() -> int:
             )
         print(
             "\nThe Pareto frontier is held-out against hairpin, one point per\n"
-            "w_phys. Read GC and arr alongside: a constraint met by dropping GC\n"
-            "with arr flat is composition, not design."
+            "w_phys. Read GC and arr alongside.\n"
+            "\n"
+            "arr = dG(sequence) - dG(shuffle of its own bases). dG is more\n"
+            "negative for more structure, so arr > 0 means the arrangement\n"
+            "AVOIDS structure and arr < 0 means it creates it. Rising and\n"
+            "positive is design; flat while GC falls is composition, which a\n"
+            "GC filter achieves without any fine-tuning."
         )
 
     if args.plot:
