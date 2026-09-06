@@ -147,16 +147,32 @@ def main() -> int:
 
     if len(loaded) > 1:
         print(f"\n{'=' * 70}\nFINAL EPOCH ACROSS RUNS\n{'=' * 70}")
-        print(f"{'w_phys':>8}{'bio':>10}{'held-out':>10}{'hack':>9}{'hairpin':>9}"
-              f"{'viol':>7}{'GC':>7}{'arr':>8}")
-        print("-" * 68)
-        for _, records, config in sorted(
-            loaded, key=lambda x: (x[2] or {}).get("w_phys", 0)
+        # w_phys alone does not identify a run -- several runs share it and
+        # differ in w_gc, alpha or length -- so name every distinguishing
+        # setting alongside the result.
+        print(
+            f"{'run':<14}{'ep':>4}{'w_phys':>8}{'w_gc':>6}{'alpha':>7}"
+            f"{'bio':>9}{'held-out':>10}{'hack':>9}{'hairpin':>9}"
+            f"{'viol':>7}{'GC':>7}{'arr':>8}"
+        )
+        print("-" * 98)
+        for name, records, config in sorted(
+            loaded,
+            key=lambda x: (
+                (x[2] or {}).get("w_phys", 0),
+                (x[2] or {}).get("w_gc", 0),
+                len(x[1]),
+            ),
         ):
             last = records[-1]
-            w = (config or {}).get("w_phys", float("nan"))
+            cfg = config or {}
+            label = cfg.get("name") or name
             print(
-                f"{w:>8.2f}{last.get('bio_reward_train_oracle', 0):>10.4f}"
+                f"{label[:14]:<14}{len(records):>4}"
+                f"{cfg.get('w_phys', float('nan')):>8.2f}"
+                f"{cfg.get('w_gc', 0):>6.1f}"
+                f"{cfg.get('alpha', float('nan')):>7.3f}"
+                f"{last.get('bio_reward_train_oracle', 0):>9.4f}"
                 f"{last.get('bio_reward_heldout_oracle', 0):>10.4f}"
                 f"{last.get('reward_hacking_gap', 0):>+9.4f}"
                 f"{last.get('hairpin_dg_ensemble', 0):>9.3f}"
