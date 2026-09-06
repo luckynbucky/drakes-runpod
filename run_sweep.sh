@@ -20,6 +20,14 @@ ENV_NAME="${ENV_NAME:-sedd}"
 
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
+# Every run below passes --skip_grelu_artifact, which replaces the function
+# that calls wandb.login(), so gReLU no longer needs wandb credentials. That
+# makes offline mode safe here -- and necessary: a fresh container has no
+# ~/.netrc, so wandb.init() would open an interactive account prompt and hang
+# an unattended run waiting for a keypress. Metrics still go to metrics.jsonl
+# regardless, and `wandb sync` can upload the offline runs later.
+export WANDB_MODE="${WANDB_MODE:-offline}"
+
 # Activate the environment rather than assuming it. A new tmux window or SSH
 # session starts in conda's base env, where none of this is installed, and the
 # failure is a ModuleNotFoundError on whichever import comes first -- which
