@@ -16,7 +16,46 @@ KIT_DIR="${KIT_DIR:-/workspace/drakes-runpod}"
 DRAKES_DIR="${DRAKES_DIR:-/workspace/DRAKES/drakes_dna}"
 EPOCHS="${EPOCHS:-30}"
 
+ENV_NAME="${ENV_NAME:-sedd}"
+
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+# Activate the environment rather than assuming it. A new tmux window or SSH
+# session starts in conda's base env, where none of this is installed, and the
+# failure is a ModuleNotFoundError on whichever import comes first -- which
+# reads as a missing package rather than a missing activation.
+if [ "${CONDA_DEFAULT_ENV:-}" != "$ENV_NAME" ]; then
+  CONDA_SH="/workspace/miniconda3/etc/profile.d/conda.sh"
+  if [ ! -f "$CONDA_SH" ] && command -v conda >/dev/null 2>&1; then
+    CONDA_SH="$(conda info --base)/etc/profile.d/conda.sh"
+  fi
+  if [ ! -f "$CONDA_SH" ]; then
+    echo "ERROR: cannot find conda.sh; activate '$ENV_NAME' yourself and re-run"
+    exit 1
+  fi
+  # shellcheck disable=SC1090
+  source "$CONDA_SH"
+  conda activate "$ENV_NAME"
+  echo "==> activated conda env: $ENV_NAME"
+fi
+
+# Fail here, in one second, rather than partway into the first run.
+echo "==> Checking the environment"
+python - <<'PYCHECK'
+import sys
+missing = []
+for module in ("torch", "wandb", "grelu", "numpy", "pandas", "lightning", "hydra"):
+    try:
+        __import__(module)
+    except ImportError:
+        missing.append(module)
+if missing:
+    sys.exit(f"missing modules: {', '.join(missing)} -- wrong environment?")
+import torch
+if not torch.cuda.is_available():
+    sys.exit("no GPU visible to torch")
+print(f"    torch {torch.__version__}, GPU {torch.cuda.get_device_name(0)}")
+PYCHECK
 
 echo "==> Syncing the kit into the DRAKES checkout"
 git -C "$KIT_DIR" pull --ff-only
