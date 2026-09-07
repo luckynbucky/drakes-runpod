@@ -35,6 +35,23 @@ Place this file in DRAKES/drakes_dna/ next to finetune_reward_bp.py, together
 with physics_reward.py and hairpin_reward.py.
 """
 
+# A new tmux window or SSH session starts in conda's base environment, where
+# none of this is installed, and the resulting ModuleNotFoundError reads as a
+# missing package rather than a missing activation. Say which it is.
+try:
+    import numpy  # noqa: F401
+    import torch  # noqa: F401
+    import wandb  # noqa: F401
+except ImportError as _exc:  # pragma: no cover
+    raise SystemExit(
+        f"Cannot import {getattr(_exc, 'name', 'a required module')!r}.\n\n"
+        "This is almost always the wrong conda environment rather than a missing\n"
+        "install -- a new shell starts in base. Run:\n\n"
+        "    conda activate sedd\n\n"
+        "If conda itself is not found (a fresh container wipes /root), first run:\n"
+        "    source /workspace/miniconda3/etc/profile.d/conda.sh\n"
+    )
+
 import argparse
 import datetime
 import json
