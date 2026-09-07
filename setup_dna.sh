@@ -124,7 +124,9 @@ pip install --prefer-binary \
 # against its independent implementation of the same thermodynamic model.
 # remotezip lets recover_files.py pull a single member out of the data
 # archive over HTTP range requests, instead of re-downloading all of it.
-pip install --prefer-binary "biopython==1.85" remotezip
+# ViennaRNA gives transfer_test.py an independent folding model to check the
+# hairpin proxy against -- one that never enters training.
+pip install --prefer-binary "biopython==1.85" remotezip ViennaRNA
 pip install --prefer-binary --upgrade hydra-core hydra-submitit-launcher
 
 # causal-conv1d is listed in env.sh because upstream MDLM can use a Mamba
