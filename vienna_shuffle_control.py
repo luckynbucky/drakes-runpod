@@ -29,7 +29,22 @@ Two null models, because they answer different questions:
                   survives is long-range complementarity: actual stems.
 
 A run that moves the first but not the second learned local stacking, not
-sequence design. That distinction is the whole question this project asks.
+sequence design. That distinction is the whole question this project asks, and
+the two nulls together separate it exactly. Write
+
+    S = MFE(mononucleotide shuffle) - MFE(dinucleotide shuffle)
+      = arr_dinuc - arr_mono
+
+for the folding propensity carried by dinucleotide composition beyond base
+counts -- the stacking load. Then for any run against a reference,
+
+    d arr_mono  =  d arr_dinuc  -  dS
+    (total)        (stems)        (stacking)
+
+so the overall arrangement effect splits, with no residual, into what the run
+did to long-range complementarity and what it did to local stacking. A run can
+post a total of zero by moving both halves in opposite directions, which is not
+the same finding as a run that did nothing.
 
 No GPU and no regeneration: the sequences are already in transfer.csv.
 
@@ -163,47 +178,62 @@ def main():
     ap.add_argument("--limit", type=int, default=0,
                     help="cap sequences per checkpoint, for a quick pass")
     ap.add_argument("--out", default=None, help="write per-sequence arr to CSV")
+    ap.add_argument("--from-arr", default=None, metavar="FILE",
+                    help="re-analyse a CSV previously written by --out, without"
+                         " re-folding anything (seconds instead of half an hour)")
     args = ap.parse_args()
-
-    try:
-        import RNA
-    except ImportError:
-        print("ViennaRNA not importable. `pip install ViennaRNA`, and check the"
-              " conda env is `sedd`.", file=sys.stderr)
-        return 1
-
-    RNA.params_load_DNA_Mathews2004()
-    md = RNA.md()
-
-    def mfe(s: str) -> float:
-        return RNA.fold_compound(s, md).mfe()[1]
-
-    rows = collections.OrderedDict()
-    with open(args.csv, newline="") as fh:
-        for r in csv.DictReader(fh):
-            rows.setdefault(r["checkpoint"], []).append(
-                (r["sequence"], float(r["vienna_mfe"])))
 
     rng = random.Random(args.seed)
     per_seq_out = []
-    results = {}
+    results = collections.OrderedDict()
 
-    for label, entries in rows.items():
-        if args.limit:
-            entries = entries[: args.limit]
-        print(f"{label}: {len(entries)} sequences x {args.shuffles} shuffles"
-              f" x 2 null models ...", flush=True)
+    if args.from_arr:
+        with open(args.from_arr, newline="") as fh:
+            for r in csv.DictReader(fh):
+                g = results.setdefault(r["checkpoint"], ([], []))
+                g[0].append(float(r["arr_mono"]))
+                g[1].append(float(r["arr_dinuc"]))
+        print(f"re-analysing {args.from_arr}: "
+              + ", ".join(f"{k} n={len(v[0])}" for k, v in results.items()))
+    else:
+        try:
+            import RNA
+        except ImportError:
+            print("ViennaRNA not importable. `pip install ViennaRNA`, and check"
+                  " the conda env is `sedd`.", file=sys.stderr)
+            return 1
 
-        arr_mono, arr_dinuc = [], []
-        for seq, real in entries:
-            m = sum(mfe(mono_shuffle(seq, rng)) for _ in range(args.shuffles))
-            d = sum(mfe(dinuc_shuffle(seq, rng)) for _ in range(args.shuffles))
-            a_m = real - m / args.shuffles
-            a_d = real - d / args.shuffles
-            arr_mono.append(a_m)
-            arr_dinuc.append(a_d)
-            per_seq_out.append([label, seq, real, a_m, a_d])
-        results[label] = (arr_mono, arr_dinuc)
+        RNA.params_load_DNA_Mathews2004()
+        md = RNA.md()
+
+        def mfe(s: str) -> float:
+            return RNA.fold_compound(s, md).mfe()[1]
+
+        rows = collections.OrderedDict()
+        with open(args.csv, newline="") as fh:
+            for r in csv.DictReader(fh):
+                rows.setdefault(r["checkpoint"], []).append(
+                    (r["sequence"], float(r["vienna_mfe"])))
+
+        for label, entries in rows.items():
+            if args.limit:
+                entries = entries[: args.limit]
+            print(f"{label}: {len(entries)} sequences x {args.shuffles} shuffles"
+                  f" x 2 null models ...", flush=True)
+
+            arr_mono, arr_dinuc = [], []
+            for seq, real in entries:
+                m = sum(mfe(mono_shuffle(seq, rng)) for _ in range(args.shuffles))
+                d = sum(mfe(dinuc_shuffle(seq, rng)) for _ in range(args.shuffles))
+                a_m = real - m / args.shuffles
+                a_d = real - d / args.shuffles
+                arr_mono.append(a_m)
+                arr_dinuc.append(a_d)
+                per_seq_out.append([label, seq, real, a_m, a_d])
+            results[label] = (arr_mono, arr_dinuc)
+        if not args.out:
+            print("\n(pass --out next time: it saves the per-sequence values so"
+                  " --from-arr can\n re-analyse them without re-folding.)")
 
     print()
     print("=" * 78)
@@ -264,6 +294,37 @@ def main():
         else:
             r = "no arrangement effect distinguishable from noise"
         print(f"    {label:<12} {r}")
+
+    # --- what the total is made of ----------------------------------------
+    print()
+    print("=" * 78)
+    print("Decomposition: d arr_mono = d arr_dinuc - dS, exactly and with no"
+          " residual")
+    print("=" * 78)
+    print("  stems    = change in folding beyond what dinucleotide composition"
+          " explains")
+    print("  stacking = change in the folding propensity of the dinucleotide"
+          " composition\n")
+    print(f"  {'checkpoint':<12}{'stems':>9}{'95% CI':>17}"
+          f"{'stacking':>10}{'95% CI':>17}{'total':>9}")
+    print("  " + "-" * 74)
+    load_ref = [d - m for m, d in zip(rm, rd)]
+    for label, (am, ad) in results.items():
+        if label == ref_label:
+            continue
+        load = [d - m for m, d in zip(am, ad)]
+        stems = sum(ad) / len(ad) - base_d
+        # stacking is -dS, so the reference and the run swap places
+        stack_lo, stack_hi = bootstrap_diff(load, load_ref, rng)
+        stack = sum(load_ref) / len(load_ref) - sum(load) / len(load)
+        st_lo, st_hi = bootstrap_diff(rd, ad, rng)
+        mark = lambda lo, hi: "" if lo <= 0 <= hi else "*"
+        print(f"  {label:<12}{stems:>+9.3f} [{st_lo:>+6.3f},{st_hi:>+6.3f}]"
+              f"{mark(st_lo, st_hi):<2}{stack:>+10.3f}"
+              f" [{stack_lo:>+6.3f},{stack_hi:>+6.3f}]{mark(stack_lo, stack_hi):<2}"
+              f"{stems + stack:>+9.3f}")
+    print("\n  A total near zero with both halves large and opposite is a trade,"
+          "\n  not an absence of effect -- read the halves, not the total.")
 
     if args.out:
         with open(args.out, "w", newline="") as fh:
