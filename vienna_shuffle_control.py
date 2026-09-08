@@ -133,6 +133,26 @@ def bootstrap_ci(values, rng, n=5000, lo=2.5, hi=97.5):
     return means[int(n * lo / 100)], means[int(n * hi / 100)]
 
 
+def bootstrap_diff(a, b, rng, n=5000, lo=2.5, hi=97.5):
+    """Interval on mean(b) - mean(a), resampling each group independently.
+
+    Two intervals that overlap do not imply the difference is consistent with
+    zero, and two that do not overlap is a stricter test than the difference
+    needs -- so neither can be read off the per-checkpoint intervals above.
+    The difference has to be bootstrapped in its own right.
+    """
+    ka, kb = len(a), len(b)
+    if ka < 2 or kb < 2:
+        return float("nan"), float("nan")
+    diffs = []
+    for _ in range(n):
+        ma = sum(a[rng.randrange(ka)] for _ in range(ka)) / ka
+        mb = sum(b[rng.randrange(kb)] for _ in range(kb)) / kb
+        diffs.append(mb - ma)
+    diffs.sort()
+    return diffs[int(n * lo / 100)], diffs[int(n * hi / 100)]
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -209,24 +229,41 @@ def main():
     print("=" * 78)
     rm, rd = results[ref_label]
     base_m, base_d = sum(rm) / len(rm), sum(rd) / len(rd)
-    print(f"  {'checkpoint':<14}{'d mononuc':>12}{'d dinuc':>12}   reading")
-    print("  " + "-" * 74)
+    print(f"  {'checkpoint':<12}{'d mononuc':>11}{'95% CI':>18}"
+          f"{'d dinuc':>10}{'95% CI':>18}")
+    print("  " + "-" * 69)
+    verdicts = []
     for label, (am, ad) in results.items():
         if label == ref_label:
             continue
         dm = sum(am) / len(am) - base_m
         dd = sum(ad) / len(ad) - base_d
-        if dm > 0.05 and dd > 0.05:
-            reading = "avoids structure by arrangement, stems included"
-        elif dm > 0.05:
-            reading = "local stacking only -- no long-range change"
-        elif dm < -0.05 and dd < -0.05:
-            reading = "BUILDS structure by arrangement"
-        elif dm < -0.05:
-            reading = "builds structure through stacking only"
+        lm, hm = bootstrap_diff(rm, am, rng)
+        ld, hd = bootstrap_diff(rd, ad, rng)
+        sig_m = 0 if lm <= 0 <= hm else (1 if lm > 0 else -1)
+        sig_d = 0 if ld <= 0 <= hd else (1 if ld > 0 else -1)
+        verdicts.append((label, dm, dd, sig_m, sig_d))
+        print(f"  {label:<12}{dm:>+11.3f}   [{lm:>+6.3f},{hm:>+6.3f}]"
+              f"{dd:>+10.3f}   [{ld:>+6.3f},{hd:>+6.3f}]")
+
+    print("\n  Reading, using only the intervals that exclude zero:")
+    for label, dm, dd, sig_m, sig_d in verdicts:
+        if sig_m > 0 and sig_d > 0:
+            r = "avoids structure by arrangement, stems included"
+        elif sig_m > 0 and sig_d < 0:
+            r = ("LOCAL STACKING ONLY -- dinucleotide composition improved"
+                 " while\n                  long-range complementarity got"
+                 " WORSE. A second cheat,\n                  one level up from"
+                 " GC content.")
+        elif sig_m > 0:
+            r = "arrangement effect, but not shown to reach long-range stems"
+        elif sig_d > 0:
+            r = "long-range stems avoided, overall effect within noise"
+        elif sig_m < 0 or sig_d < 0:
+            r = "BUILDS structure by arrangement"
         else:
-            reading = "no arrangement effect"
-        print(f"  {label:<14}{dm:>+12.3f}{dd:>+12.3f}   {reading}")
+            r = "no arrangement effect distinguishable from noise"
+        print(f"    {label:<12} {r}")
 
     if args.out:
         with open(args.out, "w", newline="") as fh:
@@ -238,7 +275,12 @@ def main():
 
     print("\nNothing here is matched, adjusted, or modelled. Each sequence is"
           " compared\nonly against reorderings of itself, so a difference"
-          " cannot be composition.")
+          " cannot be composition.\n"
+          "\nPer-sequence arr is noisy -- most of the spread is real variation"
+          " in how\nmuch a given sequence folds, not measurement error, so"
+          " more shuffles will\nnot narrow these intervals and more sequences"
+          " will. The interval width\nfalls as 1/sqrt(n), so quadrupling --n"
+          " in transfer_test.py halves it.")
     return 0
 
 
