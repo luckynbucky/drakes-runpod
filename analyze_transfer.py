@@ -200,17 +200,33 @@ def main():
         res = stratified_match(groups[ref], groups[l])
         if res is None:
             gr, gl = groups[ref]["gc"], groups[l]["gc"]
-            print(f"  {l:<14}{'--':>11}{'no GC overlap':>20}"
+            # Ranges can overlap while no single 0.005 bin holds three
+            # sequences from each side. Say which, since "the tails graze"
+            # and "the distributions coincide" are very different situations.
+            lo, hi = max(gl.min(), gr.min()), min(gl.max(), gr.max())
+            shared = "disjoint" if lo > hi else f"{lo:.3f}-{hi:.3f}, too sparse"
+            print(f"  {l:<14}{'--':>11}{shared:>20}"
                   f"      GC {gl.min():.3f}-{gl.max():.3f} vs"
                   f" {gr.min():.3f}-{gr.max():.3f}")
             continue
         est, lo, hi, nb, na_, nb_ = res
-        star = "  *" if (lo > 0) or (hi < 0) else ""
+        # The bootstrap resamples bins, so with a handful of them the interval
+        # is an artefact of having almost nothing to resample, not a tight
+        # measurement. Mark it rather than let it read as precision.
+        star = "  *" if (lo > 0 or hi < 0) and nb >= 8 else ""
+        if nb < 8:
+            star = "  (too few bins -- CI not meaningful)"
         print(f"  {l:<14}{est:>+11.2f}   [{lo:>+6.2f}, {hi:>+6.2f}]"
               f"{nb:>7}{na_:>7}{nb_:>6}{star}")
-    print("\n  * = confidence interval excludes zero. Where a row says no overlap,"
-          "\n  the two checkpoints share no composition and cannot be compared"
-          " on\n  arrangement at all -- which is the finding, not a gap in it.\n")
+    print("\n  * = interval excludes zero on at least 8 bins. A row with no usable"
+          "\n  overlap shares too little composition with the reference to be"
+          " compared\n  on arrangement at all -- which is the finding, not a"
+          " gap in it.\n"
+          "\n  Caveat that applies to every row: GC content is one number, and"
+          " matching\n  on it does not hold composition fixed. G and C pair"
+          " with each other, so a\n  run that shifted the G:C balance shows an"
+          " arrangement effect here without\n  having changed arrangement."
+          " vienna_shuffle_control.py has no such hole.\n")
 
     # --- 4. does the proxy see arrangement, or only composition? -----------
     print("=" * 74)
